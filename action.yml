@@ -29,7 +29,7 @@ inputs:
   save-always:
     description: 'Run the post step to save the cache even if another step before fails'
     default: 'false'
-    required: false    
+    required: false
 outputs:
   cache-hit:
     description: 'A boolean value to indicate an exact match was found for the primary key'
