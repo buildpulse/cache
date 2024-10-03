@@ -1,6 +1,6 @@
-# Cache action
+# BuildPulse Cache action
 
-This action allows caching dependencies and build outputs to improve workflow execution time.
+This action allows caching dependencies and build outputs to improve workflow execution time - [BuildPulse](https://buildpulse.io) Runners Varient.
 
 >Two other actions are available in addition to the primary `cache` action:
 >* [Restore action](./restore/README.md)
@@ -88,14 +88,14 @@ on: push
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: bp-ubuntu-latest-x64-4x
 
     steps:
     - uses: actions/checkout@v4
 
     - name: Cache Primes
       id: cache-primes
-      uses: actions/cache@v4
+      uses: buildpulse/cache@v4
       with:
         path: prime-numbers
         key: ${{ runner.os }}-primes
@@ -119,14 +119,14 @@ on: push
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: bp-ubuntu-latest-x64-4x
 
     steps:
     - uses: actions/checkout@v4
 
     - name: Restore cached Primes
       id: cache-primes-restore
-      uses: actions/cache/restore@v4
+      uses: buildpulse/cache/restore@v4
       with:
         path: |
           path/to/dependencies
@@ -137,7 +137,7 @@ jobs:
     .
     - name: Save Primes
       id: cache-primes-save
-      uses: actions/cache/save@v4
+      uses: buildpulse/cache/save@v4
       with:
         path: |
           path/to/dependencies
@@ -191,7 +191,7 @@ A cache key can include any of the contexts, functions, literals, and operators 
 For example, using the [`hashFiles`](https://docs.github.com/en/actions/learn-github-actions/expressions#hashfiles) function allows you to create a new cache when dependencies change.
 
 ```yaml
-  - uses: actions/cache@v4
+  - uses: buildpulse/cache@v4
     with:
       path: |
         path/to/dependencies
@@ -209,7 +209,7 @@ Additionally, you can use arbitrary command output in a cache key, such as a dat
       echo "date=$(/bin/date -u "+%Y%m%d")" >> $GITHUB_OUTPUT
     shell: bash
 
-  - uses: actions/cache@v4
+  - uses: buildpulse/cache@v4
     with:
       path: path/to/dependencies
       key: ${{ runner.os }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('**/lockfiles') }}
@@ -231,7 +231,7 @@ Example:
 steps:
   - uses: actions/checkout@v4
 
-  - uses: actions/cache@v4
+  - uses: buildpulse/cache@v4
     id: cache
     with:
       path: path/to/dependencies
@@ -242,7 +242,7 @@ steps:
     run: /install.sh
 ```
 
-> **Note** The `id` defined in `actions/cache` must match the `id` in the `if` statement (i.e. `steps.[ID].outputs.cache-hit`)
+> **Note** The `id` defined in `buildpulse/cache` must match the `id` in the `if` statement (i.e. `steps.[ID].outputs.cache-hit`)
 
 ## Cache Version
 
@@ -257,13 +257,13 @@ The workflow will create 3 unique caches with same keys. Ubuntu and windows runn
 ```yaml
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: bp-ubuntu-latest-x64-4x
     steps:
       - uses: actions/checkout@v4
 
       - name: Cache Primes
         id: cache-primes
-        uses: actions/cache@v4
+        uses: buildpulse/cache@v4
         with:
           path: prime-numbers
           key: primes
@@ -274,7 +274,7 @@ jobs:
 
       - name: Cache Numbers
         id: cache-numbers
-        uses: actions/cache@v4
+        uses: buildpulse/cache@v4
         with:
           path: numbers
           key: primes
@@ -284,13 +284,13 @@ jobs:
         run: ./generate-primes.sh -d numbers
 
   build-windows:
-    runs-on: windows-latest
+    runs-on: bp-windows-latest-x64-4x
     steps:
       - uses: actions/checkout@v4
 
       - name: Cache Primes
         id: cache-primes
-        uses: actions/cache@v4
+        uses: buildpulse/cache@v4
         with:
           path: prime-numbers
           key: primes
@@ -318,7 +318,7 @@ Please note that Windows environment variables (like `%LocalAppData%`) will NOT 
 
 ## Contributing
 
-We would love for you to contribute to `actions/cache`. Pull requests are welcome! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
+We would love for you to contribute to `buildpulse/cache`. Pull requests are welcome! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
 
 ## License
 
