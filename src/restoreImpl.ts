@@ -1,5 +1,7 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
+import * as path from "path";
+import { S3Client, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { initializeS3Client, downloadFromS3, s3Client } from "./s3Client";
 
 import { Events, Inputs, Outputs, State } from "./constants";
 import {
@@ -13,10 +15,11 @@ export async function restoreImpl(
     stateProvider: IStateProvider,
     earlyExit?: boolean | undefined
 ): Promise<string | undefined> {
+    let cacheKey: string | undefined;
     try {
         if (!utils.isCacheFeatureAvailable()) {
             core.setOutput(Outputs.CacheHit, "false");
-            return;
+            return undefined;
         }
 
         // Validate inputs, this can cause task failure
@@ -26,62 +29,69 @@ export async function restoreImpl(
                     process.env[Events.Key]
                 } is not supported because it's not tied to a branch or tag ref.`
             );
-            return;
+            return undefined;
         }
 
-        const primaryKey = core.getInput(Inputs.Key, { required: true });
+        const primaryKey =
+            stateProvider.getState(State.CachePrimaryKey) ||
+            core.getInput(Inputs.Key);
         stateProvider.setState(State.CachePrimaryKey, primaryKey);
 
-        const restoreKeys = utils.getInputAsArray(Inputs.RestoreKeys);
+        const restoreKeys = utils.getInputAsArray(Inputs.RestoreKeys).slice(1);
         const cachePaths = utils.getInputAsArray(Inputs.Path, {
             required: true
         });
-        const enableCrossOsArchive = utils.getInputAsBool(
-            Inputs.EnableCrossOsArchive
-        );
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);
+        const bucketName = process.env.BP_CACHE_S3_BUCKET || '';
 
-        const cacheKey = await cache.restoreCache(
-            cachePaths,
-            primaryKey,
-            restoreKeys,
-            { lookupOnly: lookupOnly },
-            enableCrossOsArchive
-        );
+        // Initialize S3 client
+        initializeS3Client();
 
-        if (!cacheKey) {
-            core.setOutput(Outputs.CacheHit, false.toString());
+        const allKeys = [primaryKey, ...restoreKeys];
+        let found = true;
+        for (const key of allKeys) {
+            for (const cachePath of cachePaths) {
+                const s3Key = `${key}:${cachePath}`;
+                try {
+                    if (lookupOnly) {
+                        const headObjectCommand = new HeadObjectCommand({
+                            Bucket: bucketName,
+                            Key: s3Key
+                        });
+
+                        await s3Client.send(headObjectCommand);
+                        core.info(`Cache found and can be restored from key: ${s3Key}`);
+                    } else {
+                        core.info(`Pulling ${s3Key}`);
+                        const destinationPath = cachePath;
+                        await downloadFromS3(bucketName, s3Key, destinationPath);
+
+                        core.info(`Cache restored from key: ${s3Key}`);
+                        core.setOutput(Outputs.CacheHit, s3Key);
+                    }
+                } catch (error) {
+                    found = false;
+                    core.info(`Failed to restore cache from key ${s3Key}: ${(error as Error).message}`);
+                }
+            }
+        }
+
+        if (!found) {
+            core.setOutput(Outputs.CacheHit, "false");
             if (failOnCacheMiss) {
                 throw new Error(
                     `Failed to restore cache entry. Exiting as fail-on-cache-miss is set. Input key: ${primaryKey}`
                 );
             }
             core.info(
-                `Cache not found for input keys: ${[
-                    primaryKey,
-                    ...restoreKeys
-                ].join(", ")}`
+                `Cache not found for input keys: ${allKeys.join(', ')}`
             );
-            return;
+            return undefined;
         }
 
         // Store the matched cache key in states
-        stateProvider.setState(State.CacheMatchedKey, cacheKey);
-
-        const isExactKeyMatch = utils.isExactKeyMatch(
-            core.getInput(Inputs.Key, { required: true }),
-            cacheKey
-        );
-
-        core.setOutput(Outputs.CacheHit, isExactKeyMatch.toString());
-        if (lookupOnly) {
-            core.info(`Cache found and can be restored from key: ${cacheKey}`);
-        } else {
-            core.info(`Cache restored from key: ${cacheKey}`);
-        }
-
-        return cacheKey;
+        stateProvider.setState(State.CacheMatchedKey, allKeys[0]);
     } catch (error: unknown) {
         core.setFailed((error as Error).message);
         if (earlyExit) {

@@ -1,7 +1,8 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
+import * as path from "path";
 
 import { Events, Inputs, State } from "./constants";
+import { initializeS3Client, uploadToS3 } from "./s3Client";
 import {
     IStateProvider,
     NullStateProvider,
@@ -16,8 +17,8 @@ process.on("uncaughtException", e => utils.logWarning(e.message));
 
 export async function saveImpl(
     stateProvider: IStateProvider
-): Promise<number | void> {
-    let cacheId = -1;
+): Promise<string | void> {
+    let cacheKey: string | undefined;
     try {
         if (!utils.isCacheFeatureAvailable()) {
             return;
@@ -43,6 +44,8 @@ export async function saveImpl(
             return;
         }
 
+        cacheKey = primaryKey;
+
         // If matched restore key is same as primary key, then do not save cache
         // NO-OP in case of SaveOnly action
         const restoredKey = stateProvider.getCacheState();
@@ -58,24 +61,40 @@ export async function saveImpl(
             required: true
         });
 
-        const enableCrossOsArchive = utils.getInputAsBool(
-            Inputs.EnableCrossOsArchive
-        );
+        const bucketName = process.env.BP_CACHE_S3_BUCKET;
+        if (!bucketName) {
+            throw new Error("BP_CACHE_S3_BUCKET environment variable is not set");
+        }
 
-        cacheId = await cache.saveCache(
-            cachePaths,
-            primaryKey,
-            { uploadChunkSize: utils.getInputAsInt(Inputs.UploadChunkSize) },
-            enableCrossOsArchive
-        );
+        // Initialize S3 client
+        initializeS3Client();
 
-        if (cacheId != -1) {
+        // Upload each cache path to S3
+        let success = true;
+        for (const cachePath of cachePaths) {
+            const s3Key = `${primaryKey}:${cachePath}`; // '.gz' will be appended in uploadToS3 if compressed
+            try {
+                await uploadToS3(bucketName, s3Key, cachePath);
+            } catch (error) {
+                success = false;
+                utils.logWarning(`Failed to upload ${cachePath} to S3: ${(error as Error).message}`);
+            }
+        }
+
+        if (success) {
             core.info(`Cache saved with key: ${primaryKey}`);
+        } else {
+            core.warning("Failed to save cache to S3");
         }
     } catch (error: unknown) {
-        utils.logWarning((error as Error).message);
+        if (error instanceof Error) {
+            utils.logWarning(`Error saving cache to S3 (including potential compression errors): ${error.message}`);
+        } else {
+            utils.logWarning(`Unknown error occurred while saving cache to S3`);
+        }
     }
-    return cacheId;
+
+    return cacheKey;
 }
 
 export async function saveOnlyRun(
@@ -83,8 +102,8 @@ export async function saveOnlyRun(
 ): Promise<void> {
     try {
         const cacheId = await saveImpl(new NullStateProvider());
-        if (cacheId === -1) {
-            core.warning(`Cache save failed.`);
+        if (!cacheId) {
+            core.warning(`Cache save to S3 failed.`);
         }
     } catch (err) {
         console.error(err);

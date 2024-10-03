@@ -1,7 +1,7 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
+import * as path from "path";
 
-import { RefKey } from "../constants";
+import { RefKey, Inputs } from "../constants";
 
 export function isGhes(): boolean {
     const ghUrl = new URL(
@@ -60,21 +60,30 @@ export function getInputAsBool(
     return result.toLowerCase() === "true";
 }
 
-export function isCacheFeatureAvailable(): boolean {
-    if (cache.isFeatureAvailable()) {
-        return true;
-    }
+export function validateAwsCredentials(): boolean {
+    const requiredEnvVars = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "BP_CACHE_S3_BUCKET"];
+    const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 
-    if (isGhes()) {
-        logWarning(
-            `Cache action is only supported on GHES version >= 3.5. If you are on version >=3.5 Please check with GHES admin if Actions cache service is enabled or not.
-Otherwise please upgrade to GHES version >= 3.5 and If you are also using Github Connect, please unretire the actions/cache namespace before upgrade (see https://docs.github.com/en/enterprise-server@3.5/admin/github-actions/managing-access-to-actions-from-githubcom/enabling-automatic-access-to-githubcom-actions-using-github-connect#automatic-retirement-of-namespaces-for-actions-accessed-on-githubcom)`
-        );
+    if (missingEnvVars.length > 0) {
+        logWarning(`Missing required AWS environment variables: ${missingEnvVars.join(", ")}`);
         return false;
     }
 
+
+    return true;
+}
+
+export function generateS3Key(primaryKey: string, filePath: string): string {
+    return `${process.env.GITHUB_REPOSITORY_ID}/${primaryKey}/${path.basename(filePath)}`;
+}
+
+export function isCacheFeatureAvailable(): boolean {
+    if (validateAwsCredentials()) {
+        return true;
+    }
+
     logWarning(
-        "An internal error has occurred in cache backend. Please check https://www.githubstatus.com/ for any ongoing issue in actions."
+        "S3 caching is not available. Please check your AWS credentials and S3 bucket configuration."
     );
     return false;
 }

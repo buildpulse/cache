@@ -37,7 +37,7 @@ If you are using separate jobs to create and save your cache(s) to be reused by 
 steps:
   - uses: actions/checkout@v4
 
-  - uses: actions/cache/restore@v4
+  - uses: buildpulse/cache/restore@v4
     id: cache
     with:
       path: path/to/dependencies
@@ -54,11 +54,11 @@ steps:
     run: /publish.sh
 ```
 
-Once the cache is restored, unlike `actions/cache`, this action won't run a post step to do post-processing, and the rest of the workflow will run as usual.
+Once the cache is restored, unlike `buildpulse/cache`, this action won't run a post step to do post-processing, and the rest of the workflow will run as usual.
 
 ### Save intermediate private build artifacts
 
-In case of multi-module projects, where the built artifact of one project needs to be reused in subsequent child modules, the need to rebuild the parent module again and again with every build can be eliminated. The `actions/cache` or `actions/cache/save` action can be used to build and save the parent module artifact once, and it can be restored multiple times while building the child modules.
+In case of multi-module projects, where the built artifact of one project needs to be reused in subsequent child modules, the need to rebuild the parent module again and again with every build can be eliminated. The `buildpulse/cache` or `buildpulse/cache/save` action can be used to build and save the parent module artifact once, and it can be restored multiple times while building the child modules.
 
 #### Step 1 - Build the parent module and save it
 
@@ -69,7 +69,7 @@ steps:
   - name: Build
     run: /build-parent-module.sh
 
-  - uses: actions/cache/save@v4
+  - uses: buildpulse/cache/save@v4
     id: cache
     with:
       path: path/to/dependencies
@@ -82,7 +82,7 @@ steps:
 steps:
   - uses: actions/checkout@v4
 
-  - uses: actions/cache/restore@v4
+  - uses: buildpulse/cache/restore@v4
     id: cache
     with:
       path: path/to/dependencies
@@ -109,7 +109,7 @@ To fail if there is no cache hit for the primary key, leave `restore-keys` empty
 steps:
   - uses: actions/checkout@v4
 
-  - uses: actions/cache/restore@v4
+  - uses: buildpulse/cache/restore@v4
     id: cache
     with:
       path: path/to/dependencies
@@ -124,7 +124,7 @@ steps:
 
 ### Reusing primary key and restored key in the save action
 
-Usually you may want to use the same `key` with both `actions/cache/restore` and `actions/cache/save` actions. To achieve this, use `outputs` from the `restore` action to reuse the same primary key (or the key of the cache that was restored).
+Usually you may want to use the same `key` with both `buildpulse/cache/restore` and `buildpulse/cache/save` actions. To achieve this, use `outputs` from the `restore` action to reuse the same primary key (or the key of the cache that was restored).
 
 ### Using restore action outputs to make save action behave just like the cache action
 
@@ -132,4 +132,4 @@ The outputs `cache-primary-key` and `cache-matched-key` can be used to check if 
 
 ### Ensuring proper restores and save happen across the actions
 
-It is very important to use the same `key` and `path` that were used by either `actions/cache` or `actions/cache/save` while saving the cache. Learn more about cache key [naming](https://github.com/actions/cache#creating-a-cache-key) and [versioning](https://github.com/actions/cache#cache-version) here.
+It is very important to use the same `key` and `path` that were used by either `buildpulse/cache` or `buildpulse/cache/save` while saving the cache. Learn more about cache key [naming](https://github.com/actions/cache#creating-a-cache-key) and [versioning](https://github.com/actions/cache#cache-version) here.
