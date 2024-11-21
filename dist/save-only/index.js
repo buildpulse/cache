@@ -67153,9 +67153,9 @@ function initializeS3Client() {
     return exports.s3Client;
 }
 exports.initializeS3Client = initializeS3Client;
-function compressData(filePath) {
+function compressData(filePath, key) {
     return __awaiter(this, void 0, void 0, function* () {
-        const compressedFilePath = path.join(os.tmpdir(), `${filePath}.gz`);
+        const compressedFilePath = path.join(os.tmpdir(), `${path.basename(key)}.gz`);
         const fileContent = yield fs.promises.readFile(filePath);
         return new Promise((resolve, reject) => {
             const writeStream = fs.createWriteStream(compressedFilePath);
@@ -67191,7 +67191,7 @@ function uploadToS3(bucketName, key, filePath) {
             isCompressed = true;
         }
         else {
-            compressedFilePath = yield compressData(filePath);
+            compressedFilePath = yield compressData(filePath, key);
             isCompressed = true;
         }
         const fileSize = fs.statSync(compressedFilePath).size;
@@ -67297,6 +67297,7 @@ function downloadFromS3(bucketName, key, destinationPath) {
             else {
                 throw new Error("Invalid response body from S3");
             }
+            core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath}`);
         }
         catch (error) {
             throw new Error(`Failed to download file from S3: ${error}`);

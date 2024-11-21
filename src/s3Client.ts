@@ -35,8 +35,11 @@ export function initializeS3Client(): S3Client {
     return s3Client;
 }
 
-async function compressData(filePath: string): Promise<string> {
-    const compressedFilePath = path.join(os.tmpdir(), `${filePath}.gz`);
+async function compressData(filePath: string, key: string): Promise<string> {
+    const compressedFilePath = path.join(
+        os.tmpdir(),
+        `${path.basename(key)}.gz`
+    );
     const fileContent = await fs.promises.readFile(filePath);
 
     return new Promise((resolve, reject) => {
@@ -77,7 +80,7 @@ export async function uploadToS3(bucketName: string, key: string, filePath: stri
         compressedFilePath = await compressDirectory(filePath, key);
         isCompressed = true;
     } else {
-        compressedFilePath = await compressData(filePath);
+        compressedFilePath = await compressData(filePath, key);
         isCompressed = true;
     }
 
@@ -183,6 +186,8 @@ export async function downloadFromS3(bucketName: string, key: string, destinatio
         } else {
             throw new Error("Invalid response body from S3");
         }
+
+        core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath}`);
     } catch (error) {
         throw new Error(`Failed to download file from S3: ${error}`);
     }

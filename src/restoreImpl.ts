@@ -50,7 +50,7 @@ export async function restoreImpl(
 
         const allKeys = [primaryKey, ...restoreKeys];
         for (const key of allKeys) {
-            const s3Key = `${key}/${path.basename(cachePaths[0])}`;
+            let s3Key = `${key}/${path.basename(cachePaths[0])}`;
             try {
                 if (lookupOnly) {
                     const headObjectCommand = new HeadObjectCommand({
@@ -71,7 +71,10 @@ export async function restoreImpl(
                     break;
                 } else {
                     for (const cachePath of cachePaths) {
-                        const destinationPath = path.join(process.cwd(), cachePath);
+                        s3Key = `${key}/${path.basename(cachePath)}`;
+
+                        core.info(`Pulling ${s3Key}`);
+                        const destinationPath = cachePath;
                         await downloadFromS3(bucketName, s3Key, destinationPath);
                     }
                     cacheKey = s3Key;
@@ -79,7 +82,7 @@ export async function restoreImpl(
                     break;
                 }
             } catch (error) {
-                core.debug(`Failed to restore cache from key ${s3Key}: ${(error as Error).message}`);
+                core.info(`Failed to restore cache from key ${s3Key}: ${(error as Error).message}`);
             }
         }
 

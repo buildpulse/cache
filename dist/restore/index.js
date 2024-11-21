@@ -67150,7 +67150,7 @@ function restoreImpl(stateProvider, earlyExit) {
             (0, s3Client_1.initializeS3Client)();
             const allKeys = [primaryKey, ...restoreKeys];
             for (const key of allKeys) {
-                const s3Key = `${key}/${path.basename(cachePaths[0])}`;
+                let s3Key = `${key}/${path.basename(cachePaths[0])}`;
                 try {
                     if (lookupOnly) {
                         const headObjectCommand = new client_s3_1.HeadObjectCommand({
@@ -67173,7 +67173,9 @@ function restoreImpl(stateProvider, earlyExit) {
                     }
                     else {
                         for (const cachePath of cachePaths) {
-                            const destinationPath = path.join(process.cwd(), cachePath);
+                            s3Key = `${key}/${path.basename(cachePath)}`;
+                            core.info(`Pulling ${s3Key}`);
+                            const destinationPath = cachePath;
                             yield (0, s3Client_1.downloadFromS3)(bucketName, s3Key, destinationPath);
                         }
                         cacheKey = s3Key;
@@ -67182,7 +67184,7 @@ function restoreImpl(stateProvider, earlyExit) {
                     }
                 }
                 catch (error) {
-                    core.debug(`Failed to restore cache from key ${s3Key}: ${error.message}`);
+                    core.info(`Failed to restore cache from key ${s3Key}: ${error.message}`);
                 }
             }
             const isExactKeyMatch = cacheKey === `${primaryKey}/${path.basename(cachePaths[0])}`;
@@ -67314,9 +67316,9 @@ function initializeS3Client() {
     return exports.s3Client;
 }
 exports.initializeS3Client = initializeS3Client;
-function compressData(filePath) {
+function compressData(filePath, key) {
     return __awaiter(this, void 0, void 0, function* () {
-        const compressedFilePath = path.join(os.tmpdir(), `${filePath}.gz`);
+        const compressedFilePath = path.join(os.tmpdir(), `${path.basename(key)}.gz`);
         const fileContent = yield fs.promises.readFile(filePath);
         return new Promise((resolve, reject) => {
             const writeStream = fs.createWriteStream(compressedFilePath);
@@ -67352,7 +67354,7 @@ function uploadToS3(bucketName, key, filePath) {
             isCompressed = true;
         }
         else {
-            compressedFilePath = yield compressData(filePath);
+            compressedFilePath = yield compressData(filePath, key);
             isCompressed = true;
         }
         const fileSize = fs.statSync(compressedFilePath).size;
@@ -67458,6 +67460,7 @@ function downloadFromS3(bucketName, key, destinationPath) {
             else {
                 throw new Error("Invalid response body from S3");
             }
+            core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath}`);
         }
         catch (error) {
             throw new Error(`Failed to download file from S3: ${error}`);
