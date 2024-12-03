@@ -9,6 +9,8 @@ import * as zlib from "zlib";
 import * as tar from "tar";
 import * as os from "os";
 
+import { performance } from 'perf_hooks';
+
 export let s3Client: S3Client;
 
 export function initializeS3Client(): S3Client {
@@ -158,36 +160,44 @@ export async function downloadFromS3(bucketName: string, key: string, destinatio
     try {
         const { Body } = await client.send(command);
 
-
-        if (Body instanceof Readable) {
-            // make 'compressed' directory if it doesn't exist
-            if (!fs.existsSync(compressedPath)) {
-                fs.mkdirSync(compressedPath, { recursive: true });
-            }
-
-            let writeStream = fs.createWriteStream(archiveDestinationPath);
-
-            await promisify(pipeline)(Body, writeStream);
-
-            // Unzip the .gz file first
-            const gunzipStream = createGunzip();
-            await promisify(pipeline)(
-                fs.createReadStream(archiveDestinationPath).pipe(gunzipStream),
-                fs.createWriteStream(destinationPath)
-            );
-
-            const isTar = await isTarFile(destinationPath);
-            if (isTar) {
-                await promisify(pipeline)(
-                    fs.createReadStream(destinationPath),
-                    tar.extract({ cwd: directory })
-                );
-            }
-        } else {
+        if (!(Body instanceof Readable)) {
             throw new Error("Invalid response body from S3");
         }
 
-        core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath}`);
+        // make 'compressed' directory if it doesn't exist
+        if (!fs.existsSync(compressedPath)) {
+            fs.mkdirSync(compressedPath, { recursive: true });
+        }
+
+        const startMark = performance.now();
+
+        const writeStream = fs.createWriteStream(archiveDestinationPath);
+        await promisify(pipeline)(Body, writeStream);
+
+        const downloadedMark = performance.now();
+        const downloadedTime = downloadedMark - startMark;
+
+        // Unzip the .gz file first
+        const gunzipStream = createGunzip();
+        await promisify(pipeline)(
+            fs.createReadStream(archiveDestinationPath).pipe(gunzipStream),
+            fs.createWriteStream(destinationPath)
+        );
+
+        const unzippedMark = performance.now();
+        const unzippedTime = unzippedMark - downloadedMark;
+
+        const isTar = await isTarFile(destinationPath);
+        if (isTar) {
+            await promisify(pipeline)(
+                fs.createReadStream(destinationPath),
+                tar.extract({ cwd: directory })
+            );
+        }
+
+        const extractMark = performance.now();
+        const extractTime = extractMark - unzippedMark;
+        core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath} (d: ${downloadedTime.toFixed(2)}ms, u: ${unzippedTime.toFixed(2)}ms, e: ${extractTime.toFixed(2)}ms)`);
     } catch (error) {
         throw new Error(`Failed to download file from S3: ${error}`);
     }
@@ -204,14 +214,4 @@ async function isTarFile(filePath: string): Promise<boolean> {
     const tarMagic = buffer.toString('ascii', 257, 262);
 
     return tarMagic === 'ustar';
-}
-
-async function isTarGz(filePath: string): Promise<boolean> {
-    const fd = await fs.promises.open(filePath, 'r');
-    const buffer = Buffer.alloc(262);
-    await fd.read(buffer, 0, 262, 0);
-    await fd.close();
-    const isGzip = buffer[0] === 0x1f && buffer[1] === 0x8b;
-    const isTar = buffer.toString('ascii', 257, 262) === 'ustar';
-    return isGzip && isTar;
 }

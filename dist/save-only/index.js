@@ -67133,6 +67133,7 @@ const zlib_1 = __nccwpck_require__(3106);
 const zlib = __importStar(__nccwpck_require__(3106));
 const tar = __importStar(__nccwpck_require__(8815));
 const os = __importStar(__nccwpck_require__(857));
+const perf_hooks_1 = __nccwpck_require__(2987);
 function initializeS3Client() {
     if (exports.s3Client) {
         return exports.s3Client;
@@ -67279,25 +67280,30 @@ function downloadFromS3(bucketName, key, destinationPath) {
         });
         try {
             const { Body } = yield client.send(command);
-            if (Body instanceof stream_1.Readable) {
-                // make 'compressed' directory if it doesn't exist
-                if (!fs.existsSync(compressedPath)) {
-                    fs.mkdirSync(compressedPath, { recursive: true });
-                }
-                let writeStream = fs.createWriteStream(archiveDestinationPath);
-                yield (0, util_1.promisify)(stream_1.pipeline)(Body, writeStream);
-                // Unzip the .gz file first
-                const gunzipStream = (0, zlib_1.createGunzip)();
-                yield (0, util_1.promisify)(stream_1.pipeline)(fs.createReadStream(archiveDestinationPath).pipe(gunzipStream), fs.createWriteStream(destinationPath));
-                const isTar = yield isTarFile(destinationPath);
-                if (isTar) {
-                    yield (0, util_1.promisify)(stream_1.pipeline)(fs.createReadStream(destinationPath), tar.extract({ cwd: directory }));
-                }
-            }
-            else {
+            if (!(Body instanceof stream_1.Readable)) {
                 throw new Error("Invalid response body from S3");
             }
-            core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath}`);
+            // make 'compressed' directory if it doesn't exist
+            if (!fs.existsSync(compressedPath)) {
+                fs.mkdirSync(compressedPath, { recursive: true });
+            }
+            const startMark = perf_hooks_1.performance.now();
+            const writeStream = fs.createWriteStream(archiveDestinationPath);
+            yield (0, util_1.promisify)(stream_1.pipeline)(Body, writeStream);
+            const downloadedMark = perf_hooks_1.performance.now();
+            const downloadedTime = downloadedMark - startMark;
+            // Unzip the .gz file first
+            const gunzipStream = (0, zlib_1.createGunzip)();
+            yield (0, util_1.promisify)(stream_1.pipeline)(fs.createReadStream(archiveDestinationPath).pipe(gunzipStream), fs.createWriteStream(destinationPath));
+            const unzippedMark = perf_hooks_1.performance.now();
+            const unzippedTime = unzippedMark - downloadedMark;
+            const isTar = yield isTarFile(destinationPath);
+            if (isTar) {
+                yield (0, util_1.promisify)(stream_1.pipeline)(fs.createReadStream(destinationPath), tar.extract({ cwd: directory }));
+            }
+            const extractMark = perf_hooks_1.performance.now();
+            const extractTime = extractMark - unzippedMark;
+            core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath} (d: ${downloadedTime.toFixed(2)}ms, u: ${unzippedTime.toFixed(2)}ms, e: ${extractTime.toFixed(2)}ms)`);
         }
         catch (error) {
             throw new Error(`Failed to download file from S3: ${error}`);
@@ -67314,17 +67320,6 @@ function isTarFile(filePath) {
         // The magic number "ustar" is located at byte positions 257-262
         const tarMagic = buffer.toString('ascii', 257, 262);
         return tarMagic === 'ustar';
-    });
-}
-function isTarGz(filePath) {
-    return __awaiter(this, void 0, void 0, function* () {
-        const fd = yield fs.promises.open(filePath, 'r');
-        const buffer = Buffer.alloc(262);
-        yield fd.read(buffer, 0, 262, 0);
-        yield fd.close();
-        const isGzip = buffer[0] === 0x1f && buffer[1] === 0x8b;
-        const isTar = buffer.toString('ascii', 257, 262) === 'ustar';
-        return isGzip && isTar;
     });
 }
 
