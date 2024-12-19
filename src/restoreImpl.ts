@@ -1,5 +1,5 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
+import * as cache from "@buildpulse/cache";
 
 import { Events, Inputs, Outputs, State } from "./constants";
 import {
@@ -42,6 +42,7 @@ export async function restoreImpl(
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);
 
+        core.info(`restore keys: ${restoreKeys.join(", ")}`);
         const cacheKey = await cache.restoreCache(
             cachePaths,
             primaryKey,
