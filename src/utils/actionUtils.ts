@@ -1,4 +1,4 @@
-import * as cache from "@actions/cache";
+import * as cache from "@buildpulse/cache";
 import * as core from "@actions/core";
 
 import { RefKey } from "../constants";
