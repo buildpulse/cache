@@ -1,15 +1,61 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
-import { Readable, pipeline } from "stream";
+import { Readable, pipeline, PassThrough } from "stream";
 import { promisify } from "util";
 import * as core from "@actions/core";
 import * as fs from "fs";
 import * as path from "path";
-import { createGunzip } from 'zlib';
+import { createGunzip, createGzip } from 'zlib';
 import * as zlib from "zlib";
 import * as tar from "tar";
 import * as os from "os";
+import { spawn } from "child_process";
 
 export let s3Client: S3Client;
+
+// Check if zstd is available on the system
+async function isZstdAvailable(): Promise<boolean> {
+    return new Promise((resolve) => {
+        const proc = spawn('zstd', ['--version']);
+        proc.on('close', (code) => resolve(code === 0));
+        proc.on('error', () => resolve(false));
+    });
+}
+
+// Create a zstd decompression stream using command-line zstd
+function createZstdDecompressStream(): NodeJS.ReadWriteStream {
+    const proc = spawn('zstd', ['-d', '--stdout'], {
+        stdio: ['pipe', 'pipe', 'inherit']
+    });
+
+    const passThrough = new PassThrough();
+    proc.stdout.pipe(passThrough);
+
+    // Create a duplex-like stream
+    const stream = new PassThrough();
+    stream.pipe(proc.stdin);
+
+    // Forward data from proc.stdout to our output
+    (stream as any).readable = passThrough;
+
+    return stream as any;
+}
+
+// Create a zstd compression stream using command-line zstd
+function createZstdCompressStream(level: number = 3): NodeJS.ReadWriteStream {
+    const proc = spawn('zstd', [`-${level}`, '--stdout'], {
+        stdio: ['pipe', 'pipe', 'inherit']
+    });
+
+    const passThrough = new PassThrough();
+    proc.stdout.pipe(passThrough);
+
+    const stream = new PassThrough();
+    stream.pipe(proc.stdin);
+
+    (stream as any).readable = passThrough;
+
+    return stream as any;
+}
 
 export function initializeS3Client(): S3Client {
     if (s3Client) {
@@ -35,39 +81,75 @@ export function initializeS3Client(): S3Client {
     return s3Client;
 }
 
-async function compressData(filePath: string, key: string): Promise<string> {
+async function compressData(filePath: string, key: string, useZstd: boolean): Promise<string> {
+    const ext = useZstd ? '.zst' : '.gz';
     const compressedFilePath = path.join(
         os.tmpdir(),
-        `${path.basename(key)}.gz`
+        `${path.basename(key)}${ext}`
     );
     const fileContent = await fs.promises.readFile(filePath);
 
     return new Promise((resolve, reject) => {
         const writeStream = fs.createWriteStream(compressedFilePath);
-        const gzip = zlib.createGzip();
 
-        const readStream = Readable.from(fileContent);
-        readStream
-            .pipe(gzip)
-            .pipe(writeStream)
-            .on('finish', () => resolve(compressedFilePath))
-            .on('error', reject);
+        if (useZstd) {
+            const proc = spawn('zstd', ['-3', '--stdout'], {
+                stdio: ['pipe', 'pipe', 'inherit']
+            });
+            const readStream = Readable.from(fileContent);
+            readStream.pipe(proc.stdin);
+            proc.stdout.pipe(writeStream);
+            writeStream.on('finish', () => resolve(compressedFilePath));
+            writeStream.on('error', reject);
+            proc.on('error', reject);
+        } else {
+            const gzip = zlib.createGzip();
+            const readStream = Readable.from(fileContent);
+            readStream
+                .pipe(gzip)
+                .pipe(writeStream)
+                .on('finish', () => resolve(compressedFilePath))
+                .on('error', reject);
+        }
     });
 }
 
-async function compressDirectory(dirPath: string, key: string): Promise<string> {
-    const tempFile = path.join(os.tmpdir(), `${path.basename(key)}.tar.gz`);
+async function compressDirectory(dirPath: string, key: string, useZstd: boolean): Promise<string> {
+    const ext = useZstd ? '.tar.zst' : '.tar.gz';
+    const tempFile = path.join(os.tmpdir(), `${path.basename(key)}${ext}`);
 
-    await tar.create(
-        {
-            gzip: true,
-            file: tempFile,
-            cwd: path.dirname(dirPath)
-        },
-        [path.basename(dirPath)]
-    );
+    if (useZstd) {
+        // Use command-line tar with zstd for best performance
+        return new Promise((resolve, reject) => {
+            const proc = spawn('tar', [
+                '-cf', tempFile,
+                '--use-compress-program=zstd',
+                '-C', path.dirname(dirPath),
+                path.basename(dirPath)
+            ], {
+                stdio: ['inherit', 'inherit', 'inherit']
+            });
 
-    return tempFile; // Return path of compressed tarball
+            proc.on('close', (code) => {
+                if (code === 0) {
+                    resolve(tempFile);
+                } else {
+                    reject(new Error(`tar exited with code ${code}`));
+                }
+            });
+            proc.on('error', reject);
+        });
+    } else {
+        await tar.create(
+            {
+                gzip: true,
+                file: tempFile,
+                cwd: path.dirname(dirPath)
+            },
+            [path.basename(dirPath)]
+        );
+        return tempFile;
+    }
 }
 
 
@@ -76,11 +158,18 @@ export async function uploadToS3(bucketName: string, key: string, filePath: stri
     let compressedFilePath: string;
     let isCompressed = false;
 
+    const useZstd = await isZstdAvailable();
+    if (useZstd) {
+        core.info(`Using zstd for compression`);
+    } else {
+        core.info(`Using gzip for compression (zstd not available)`);
+    }
+
     if (fs.statSync(filePath).isDirectory()) {
-        compressedFilePath = await compressDirectory(filePath, key);
+        compressedFilePath = await compressDirectory(filePath, key, useZstd);
         isCompressed = true;
     } else {
-        compressedFilePath = await compressData(filePath, key);
+        compressedFilePath = await compressData(filePath, key, useZstd);
         isCompressed = true;
     }
 
@@ -145,10 +234,21 @@ export async function uploadToS3(bucketName: string, key: string, filePath: stri
     core.info(`Successfully uploaded ${isCompressed ? 'compressed ' : ''}${filePath} to S3 bucket ${bucketName} with key ${key}`);
 }
 
+// Detect compression format from magic bytes
+// gzip: 0x1f 0x8b
+// zstd: 0x28 0xb5 0x2f 0xfd
+function detectCompressionFormat(header: Buffer): 'gzip' | 'zstd' | 'unknown' {
+    if (header.length >= 2 && header[0] === 0x1f && header[1] === 0x8b) {
+        return 'gzip';
+    }
+    if (header.length >= 4 && header[0] === 0x28 && header[1] === 0xb5 && header[2] === 0x2f && header[3] === 0xfd) {
+        return 'zstd';
+    }
+    return 'unknown';
+}
+
 export async function downloadFromS3(bucketName: string, key: string, destinationPath: string): Promise<void> {
-    const directory = path.dirname(destinationPath);
-    const compressedPath = path.join(directory, 'compressed');
-    const archiveDestinationPath = path.join(compressedPath, path.basename(destinationPath + ".gz"));
+    const directory = path.dirname(destinationPath) || '.';
     const client = initializeS3Client();
     const command = new GetObjectCommand({
         Bucket: bucketName,
@@ -158,36 +258,74 @@ export async function downloadFromS3(bucketName: string, key: string, destinatio
     try {
         const { Body } = await client.send(command);
 
-
-        if (Body instanceof Readable) {
-            // make 'compressed' directory if it doesn't exist
-            if (!fs.existsSync(compressedPath)) {
-                fs.mkdirSync(compressedPath, { recursive: true });
-            }
-
-            let writeStream = fs.createWriteStream(archiveDestinationPath);
-
-            await promisify(pipeline)(Body, writeStream);
-
-            // Unzip the .gz file first
-            const gunzipStream = createGunzip();
-            await promisify(pipeline)(
-                fs.createReadStream(archiveDestinationPath).pipe(gunzipStream),
-                fs.createWriteStream(destinationPath)
-            );
-
-            const isTar = await isTarFile(destinationPath);
-            if (isTar) {
-                await promisify(pipeline)(
-                    fs.createReadStream(destinationPath),
-                    tar.extract({ cwd: directory })
-                );
-            }
-        } else {
+        if (!(Body instanceof Readable)) {
             throw new Error("Invalid response body from S3");
         }
 
-        core.info(`Successfully downloaded file from S3 bucket ${bucketName} with key ${key} to ${archiveDestinationPath} -> ${destinationPath}`);
+        // Ensure destination directory exists
+        if (directory && directory !== '.') {
+            fs.mkdirSync(directory, { recursive: true });
+        }
+
+        // Read first few bytes to detect compression format
+        const headerChunks: Buffer[] = [];
+        let headerSize = 0;
+        const HEADER_SIZE = 4; // Need 4 bytes to detect zstd
+
+        for await (const chunk of Body) {
+            headerChunks.push(chunk);
+            headerSize += chunk.length;
+            if (headerSize >= HEADER_SIZE) {
+                break;
+            }
+        }
+
+        const header = Buffer.concat(headerChunks);
+        const format = detectCompressionFormat(header);
+
+        // Create a new readable stream that includes the header we already read
+        const fullStream = new PassThrough();
+        fullStream.write(header);
+        Body.pipe(fullStream);
+
+        const zstdAvailable = await isZstdAvailable();
+
+        if (format === 'zstd' && zstdAvailable) {
+            core.info(`Detected zstd compression, using streaming decompression`);
+
+            const tarProc = spawn('tar', ['-xf', '-', '--use-compress-program=zstd', '-C', directory || '.'], {
+                stdio: ['pipe', 'inherit', 'inherit']
+            });
+
+            await new Promise<void>((resolve, reject) => {
+                fullStream.pipe(tarProc.stdin);
+
+                tarProc.on('close', (code) => {
+                    if (code === 0) {
+                        resolve();
+                    } else {
+                        reject(new Error(`tar exited with code ${code}`));
+                    }
+                });
+
+                tarProc.on('error', reject);
+                fullStream.on('error', reject);
+            });
+        } else if (format === 'gzip' || format === 'unknown') {
+            core.info(`Detected gzip compression, using streaming decompression`);
+
+            // Use streaming gzip + tar extract
+            await promisify(pipeline)(
+                fullStream,
+                createGunzip(),
+                tar.extract({ cwd: directory || '.' })
+            );
+        } else {
+            // zstd format but zstd not available
+            throw new Error(`Cache is zstd compressed but zstd is not available on this runner`);
+        }
+
+        core.info(`Successfully downloaded and extracted cache from S3 bucket ${bucketName} with key ${key} to ${destinationPath}`);
     } catch (error) {
         throw new Error(`Failed to download file from S3: ${error}`);
     }
