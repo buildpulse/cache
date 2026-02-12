@@ -267,38 +267,28 @@ export async function downloadFromS3(bucketName: string, key: string, destinatio
             fs.mkdirSync(directory, { recursive: true });
         }
 
-        // Read first few bytes to detect compression format
-        const headerChunks: Buffer[] = [];
-        let headerSize = 0;
-        const HEADER_SIZE = 4; // Need 4 bytes to detect zstd
+        // Download to temp file first (more reliable than streaming with format detection)
+        const tempFile = path.join(os.tmpdir(), `cache-download-${Date.now()}`);
+        const writeStream = fs.createWriteStream(tempFile);
 
-        for await (const chunk of Body) {
-            headerChunks.push(chunk);
-            headerSize += chunk.length;
-            if (headerSize >= HEADER_SIZE) {
-                break;
-            }
-        }
+        await promisify(pipeline)(Body, writeStream);
 
-        const header = Buffer.concat(headerChunks);
+        // Detect format from temp file
+        const fd = await fs.promises.open(tempFile, 'r');
+        const header = Buffer.alloc(4);
+        await fd.read(header, 0, 4, 0);
+        await fd.close();
+
         const format = detectCompressionFormat(header);
-
-        // Create a new readable stream that includes the header we already read
-        const fullStream = new PassThrough();
-        fullStream.write(header);
-        Body.pipe(fullStream);
-
         const zstdAvailable = await isZstdAvailable();
 
         if (format === 'zstd' && zstdAvailable) {
-            core.info(`Detected zstd compression, using streaming decompression`);
-
-            const tarProc = spawn('tar', ['-xf', '-', '--use-compress-program=zstd', '-C', directory || '.'], {
-                stdio: ['pipe', 'inherit', 'inherit']
-            });
+            core.info(`Detected zstd compression, extracting with zstd`);
 
             await new Promise<void>((resolve, reject) => {
-                fullStream.pipe(tarProc.stdin);
+                const tarProc = spawn('tar', ['-xf', tempFile, '--use-compress-program=zstd', '-C', directory || '.'], {
+                    stdio: ['inherit', 'inherit', 'inherit']
+                });
 
                 tarProc.on('close', (code) => {
                     if (code === 0) {
@@ -309,14 +299,12 @@ export async function downloadFromS3(bucketName: string, key: string, destinatio
                 });
 
                 tarProc.on('error', reject);
-                fullStream.on('error', reject);
             });
         } else if (format === 'gzip' || format === 'unknown') {
-            core.info(`Detected gzip compression, using streaming decompression`);
+            core.info(`Detected gzip compression, extracting with gzip`);
 
-            // Use streaming gzip + tar extract
             await promisify(pipeline)(
-                fullStream,
+                fs.createReadStream(tempFile),
                 createGunzip(),
                 tar.extract({ cwd: directory || '.' })
             );
@@ -324,6 +312,9 @@ export async function downloadFromS3(bucketName: string, key: string, destinatio
             // zstd format but zstd not available
             throw new Error(`Cache is zstd compressed but zstd is not available on this runner`);
         }
+
+        // Clean up temp file
+        fs.unlinkSync(tempFile);
 
         core.info(`Successfully downloaded and extracted cache from S3 bucket ${bucketName} with key ${key} to ${destinationPath}`);
     } catch (error) {
