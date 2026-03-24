@@ -44959,7 +44959,8 @@ function initializeS3Client() {
             accessKeyId,
             secretAccessKey
         },
-        region
+        region,
+        followRegionRedirects: true
     });
     return exports.s3Client;
 }
