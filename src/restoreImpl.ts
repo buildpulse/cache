@@ -38,9 +38,16 @@ export async function restoreImpl(
         stateProvider.setState(State.CachePrimaryKey, primaryKey);
 
         const restoreKeys = utils.getInputAsArray(Inputs.RestoreKeys).slice(1);
-        const cachePaths = utils.getInputAsArray(Inputs.Path, {
+        const cachePathPatterns = utils.getInputAsArray(Inputs.Path, {
             required: true
         });
+
+        // Resolve glob patterns to actual file paths
+        // For restore, paths may not exist yet (they'll be created by restore)
+        // so we use the raw patterns as fallback for basename extraction
+        const cachePaths = await utils.resolvePaths(cachePathPatterns);
+        const effectivePaths = cachePaths.length > 0 ? cachePaths : cachePathPatterns;
+
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);
         const bucketName = process.env.BP_CACHE_S3_BUCKET || '';
@@ -50,7 +57,7 @@ export async function restoreImpl(
 
         const allKeys = [primaryKey, ...restoreKeys];
         for (const key of allKeys) {
-            let s3Key = `${key}/${path.basename(cachePaths[0])}`;
+            let s3Key = `${key}/${path.basename(effectivePaths[0])}`;
             try {
                 if (lookupOnly) {
                     const headObjectCommand = new HeadObjectCommand({
@@ -70,7 +77,7 @@ export async function restoreImpl(
                     cacheKey = s3Key;
                     break;
                 } else {
-                    for (const cachePath of cachePaths) {
+                    for (const cachePath of effectivePaths) {
                         s3Key = `${key}/${path.basename(cachePath)}`;
 
                         core.info(`Pulling ${s3Key}`);
@@ -86,7 +93,7 @@ export async function restoreImpl(
             }
         }
 
-        const isExactKeyMatch = cacheKey === `${primaryKey}/${path.basename(cachePaths[0])}`;
+        const isExactKeyMatch = cacheKey === `${primaryKey}/${path.basename(effectivePaths[0])}`;
         core.setOutput(Outputs.CacheHit, isExactKeyMatch.toString());
 
         if (!cacheKey) {

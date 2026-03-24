@@ -55,9 +55,17 @@ export async function saveImpl(
             return;
         }
 
-        const cachePaths = utils.getInputAsArray(Inputs.Path, {
+        const cachePathPatterns = utils.getInputAsArray(Inputs.Path, {
             required: true
         });
+
+        // Resolve glob patterns to actual file paths
+        const cachePaths = await utils.resolvePaths(cachePathPatterns);
+        if (cachePaths.length === 0) {
+            utils.logWarning(`No files found matching the cache path patterns: ${cachePathPatterns.join(", ")}`);
+            return;
+        }
+        core.info(`Resolved cache paths: ${cachePaths.join(", ")}`);
 
         const bucketName = process.env.BP_CACHE_S3_BUCKET;
         if (!bucketName) {
@@ -69,7 +77,7 @@ export async function saveImpl(
 
         // Upload each cache path to S3
         for (const cachePath of cachePaths) {
-            const s3Key = `${primaryKey}/${path.basename(cachePath)}`; // '.gz' will be appended in uploadToS3 if compressed
+            const s3Key = `${primaryKey}/${path.basename(cachePath)}`;
             try {
                 await uploadToS3(bucketName, s3Key, cachePath);
                 if (!cacheKey) {

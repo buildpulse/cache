@@ -1,4 +1,5 @@
 import * as core from "@actions/core";
+import * as glob from "@actions/glob";
 import * as path from "path";
 
 import { RefKey, Inputs } from "../constants";
@@ -75,6 +76,24 @@ export function validateAwsCredentials(): boolean {
 
 export function generateS3Key(primaryKey: string, filePath: string): string {
     return `${process.env.GITHUB_REPOSITORY_ID}/${primaryKey}/${path.basename(filePath)}`;
+}
+
+export async function resolvePaths(patterns: string[]): Promise<string[]> {
+    const paths: string[] = [];
+    const workspace = process.env["GITHUB_WORKSPACE"] ?? process.cwd();
+    const globber = await glob.create(patterns.join("\n"), {
+        implicitDescendants: false
+    });
+
+    for await (const file of globber.globGenerator()) {
+        const relativeFile = path.relative(workspace, file);
+        // Only include files within the workspace
+        if (!relativeFile.startsWith("..")) {
+            paths.push(file);
+        }
+    }
+
+    return paths;
 }
 
 export function isCacheFeatureAvailable(): boolean {
