@@ -70,6 +70,10 @@ export function initializeS3Client(): S3Client {
         throw new Error("AWS credentials or region not provided");
     }
 
+    core.info(`[S3 Debug] Region: ${region}`);
+    core.info(`[S3 Debug] Access Key ID: ${accessKeyId.substring(0, 8)}...`);
+    core.info(`[S3 Debug] Bucket: ${process.env.BP_CACHE_S3_BUCKET}`);
+
     s3Client = new S3Client({
         credentials: {
             accessKeyId,
@@ -156,6 +160,7 @@ async function compressDirectory(dirPath: string, key: string, useZstd: boolean)
 
 
 export async function uploadToS3(bucketName: string, key: string, filePath: string): Promise<void> {
+    core.info(`[S3 Debug] uploadToS3 - Bucket: ${bucketName}, Key: ${key}, FilePath: ${filePath}`);
     const client = initializeS3Client();
     let compressedFilePath: string;
     let isCompressed = false;
