@@ -76,7 +76,8 @@ export function initializeS3Client(): S3Client {
             secretAccessKey
         },
         region,
-        followRegionRedirects: true
+        followRegionRedirects: true,
+        forcePathStyle: true
     });
 
     return s3Client;

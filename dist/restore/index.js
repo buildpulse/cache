@@ -47280,7 +47280,8 @@ function initializeS3Client() {
             secretAccessKey
         },
         region,
-        followRegionRedirects: true
+        followRegionRedirects: true,
+        forcePathStyle: true
     });
     return exports.s3Client;
 }
