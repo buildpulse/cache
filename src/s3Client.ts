@@ -62,9 +62,9 @@ export function initializeS3Client(): S3Client {
         return s3Client;
     }
 
-    const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-    const region = process.env.AWS_REGION;
+    const accessKeyId = process.env.BP_CACHE_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.BP_CACHE_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+    const region = process.env.BP_CACHE_AWS_REGION || process.env.AWS_REGION;
 
     if (!accessKeyId || !secretAccessKey || !region) {
         throw new Error("AWS credentials or region not provided");

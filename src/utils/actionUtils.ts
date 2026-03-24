@@ -62,8 +62,15 @@ export function getInputAsBool(
 }
 
 export function validateAwsCredentials(): boolean {
-    const requiredEnvVars = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "BP_CACHE_S3_BUCKET"];
-    const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+    const requiredVars = [
+        ["BP_CACHE_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+        ["BP_CACHE_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"],
+        ["BP_CACHE_AWS_REGION", "AWS_REGION"],
+        ["BP_CACHE_S3_BUCKET"],
+    ];
+    const missingEnvVars = requiredVars
+        .filter(vars => !vars.some(v => process.env[v]))
+        .map(vars => vars[0]);
 
     if (missingEnvVars.length > 0) {
         logWarning(`Missing required AWS environment variables: ${missingEnvVars.join(", ")}`);
