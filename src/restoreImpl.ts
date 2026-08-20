@@ -57,7 +57,7 @@ export async function restoreImpl(
 
         const allKeys = [primaryKey, ...restoreKeys];
         for (const key of allKeys) {
-            let s3Key = `${key}/${path.basename(effectivePaths[0])}`;
+            let s3Key = utils.cacheObjectKey(key, effectivePaths[0]);
             try {
                 if (lookupOnly) {
                     const headObjectCommand = new HeadObjectCommand({
@@ -78,7 +78,7 @@ export async function restoreImpl(
                     break;
                 } else {
                     for (const cachePath of effectivePaths) {
-                        s3Key = `${key}/${path.basename(cachePath)}`;
+                        s3Key = utils.cacheObjectKey(key, cachePath);
 
                         core.info(`Pulling ${s3Key}`);
                         const destinationPath = cachePath;
@@ -93,7 +93,7 @@ export async function restoreImpl(
             }
         }
 
-        const isExactKeyMatch = cacheKey === `${primaryKey}/${path.basename(effectivePaths[0])}`;
+        const isExactKeyMatch = cacheKey === utils.cacheObjectKey(primaryKey, effectivePaths[0]);
         core.setOutput(Outputs.CacheHit, isExactKeyMatch.toString());
 
         if (!cacheKey) {

@@ -66,23 +66,31 @@ export function initializeS3Client(): S3Client {
     const secretAccessKey = process.env.BP_CACHE_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
     const region = process.env.BP_CACHE_AWS_REGION || process.env.AWS_REGION;
 
-    if (!accessKeyId || !secretAccessKey || !region) {
-        throw new Error("AWS credentials or region not provided");
+    if (!region) {
+        throw new Error("AWS region not provided (set BP_CACHE_AWS_REGION or AWS_REGION)");
     }
 
-    core.info(`[S3 Debug] Region: ${region}`);
-    core.info(`[S3 Debug] Access Key ID: ${accessKeyId.substring(0, 8)}...`);
-    core.info(`[S3 Debug] Bucket: ${process.env.BP_CACHE_S3_BUCKET}`);
+    core.info(`[S3] Region: ${region}`);
+    core.info(`[S3] Bucket: ${process.env.BP_CACHE_S3_BUCKET}`);
+    if (process.env.BP_CACHE_KEY_PREFIX) {
+        core.info(`[S3] Key prefix: ${process.env.BP_CACHE_KEY_PREFIX}`);
+    }
 
-    s3Client = new S3Client({
-        credentials: {
-            accessKeyId,
-            secretAccessKey
-        },
+    // Only pass explicit credentials when both are set. Otherwise fall through to
+    // the SDK default provider chain (EKS Pod Identity / IRSA / instance role).
+    // Passing credentials: undefined still overrides the chain in some SDK paths —
+    // omit the field entirely when using Pod Identity.
+    const clientConfig: ConstructorParameters<typeof S3Client>[0] = {
         region,
-        followRegionRedirects: true,
-        forcePathStyle: true
-    });
+    };
+    if (accessKeyId && secretAccessKey) {
+        core.info("[S3] Using static access keys from env");
+        clientConfig.credentials = { accessKeyId, secretAccessKey };
+    } else {
+        core.info("[S3] Using default AWS credential provider chain");
+    }
+
+    s3Client = new S3Client(clientConfig);
 
     return s3Client;
 }

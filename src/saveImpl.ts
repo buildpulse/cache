@@ -77,7 +77,7 @@ export async function saveImpl(
 
         // Upload each cache path to S3
         for (const cachePath of cachePaths) {
-            const s3Key = `${primaryKey}/${path.basename(cachePath)}`;
+            const s3Key = utils.cacheObjectKey(primaryKey, cachePath);
             try {
                 await uploadToS3(bucketName, s3Key, cachePath);
                 if (!cacheKey) {

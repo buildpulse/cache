@@ -1,5 +1,12 @@
 # Releases
 
+### 6.0.0
+
+- **Breaking (auth):** Static `BP_CACHE_AWS_*` / `AWS_*` keys are optional. When absent, the action uses the AWS SDK default credential provider chain (EKS Pod Identity / IRSA).
+- **Breaking (keys):** Optional `BP_CACHE_KEY_PREFIX` is prepended to every S3 object key (tenant isolation on a shared bucket).
+- Removed Access Key ID debug logging from workflow logs.
+- Dropped `forcePathStyle` / `followRegionRedirects` workarounds used for the legacy cross-region v1 bucket.
+
 ### 4.0.2
 
 - Fixed restore `fail-on-cache-miss` not working.
