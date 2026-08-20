@@ -62,9 +62,10 @@ export function getInputAsBool(
 }
 
 export function validateAwsCredentials(): boolean {
+    // Bucket + region are always required. Static access keys are optional —
+    // when absent, buildpulse/cache@v6 uses the SDK default provider chain
+    // (EKS Pod Identity).
     const requiredVars = [
-        ["BP_CACHE_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
-        ["BP_CACHE_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"],
         ["BP_CACHE_AWS_REGION", "AWS_REGION"],
         ["BP_CACHE_S3_BUCKET"],
     ];
@@ -81,8 +82,16 @@ export function validateAwsCredentials(): boolean {
     return true;
 }
 
+/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX enables
+ *  shared-bucket tenant isolation (namespace/) with Pod Identity ABAC. */
+export function cacheObjectKey(primaryKey: string, filePath: string): string {
+    const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
+    const base = `${primaryKey}/${path.basename(filePath)}`;
+    return prefix ? `${prefix}/${base}` : base;
+}
+
 export function generateS3Key(primaryKey: string, filePath: string): string {
-    return `${process.env.GITHUB_REPOSITORY_ID}/${primaryKey}/${path.basename(filePath)}`;
+    return cacheObjectKey(primaryKey, filePath);
 }
 
 export async function resolvePaths(patterns: string[]): Promise<string[]> {
