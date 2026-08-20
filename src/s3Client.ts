@@ -127,8 +127,17 @@ async function compressDirectory(dirPath: string, key: string, useZstd: boolean)
     if (useZstd) {
         // Use command-line tar with zstd for best performance
         return new Promise((resolve, reject) => {
+            // --ignore-failed-read: a cache directory is not guaranteed to be
+            // fully readable by the runner user. /var/cache/apt/archives holds a
+            // root-owned 0700 `partial/`, and GNU tar exits 2 on the first
+            // unreadable entry, aborting the whole archive. Without this flag the
+            // save fails and saveImpl downgrades it to a warning, so the job stays
+            // green and the cache is simply never written — which is exactly the
+            // EACCES on /var/cache/apt/archives/partial reported 2026-08-18.
+            // Skipping the unreadable entry is strictly better than caching nothing.
             const proc = spawn('tar', [
                 '-cf', tempFile,
+                '--ignore-failed-read',
                 '--use-compress-program=zstd',
                 '-C', path.dirname(dirPath),
                 path.basename(dirPath)
@@ -137,7 +146,15 @@ async function compressDirectory(dirPath: string, key: string, useZstd: boolean)
             });
 
             proc.on('close', (code) => {
-                if (code === 0) {
+                // 0 = clean. 1 = "some files differ"/were skipped, which is the
+                // documented exit for --ignore-failed-read having done its job;
+                // the archive is valid and worth uploading. 2 is a real failure.
+                if (code === 0 || code === 1) {
+                    if (code === 1) {
+                        core.warning(
+                            `tar skipped one or more unreadable entries under ${dirPath}; cached what it could`
+                        );
+                    }
                     resolve(tempFile);
                 } else {
                     reject(new Error(`tar exited with code ${code}`));
@@ -146,12 +163,17 @@ async function compressDirectory(dirPath: string, key: string, useZstd: boolean)
             proc.on('error', reject);
         });
     } else {
+        // Same tolerance on the node-tar fallback: warn on an unreadable entry
+        // rather than rejecting the whole archive.
         await tar.create(
             {
                 gzip: true,
                 file: tempFile,
-                cwd: path.dirname(dirPath)
-            },
+                cwd: path.dirname(dirPath),
+                onwarn: (code: string, message: string) => {
+                    core.warning(`tar: ${code}: ${message}`);
+                }
+            } as tar.CreateOptions & { file: string },
             [path.basename(dirPath)]
         );
         return tempFile;

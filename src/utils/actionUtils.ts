@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
+import * as os from "os";
 import * as path from "path";
 
 import { RefKey, Inputs } from "../constants";
@@ -85,19 +86,37 @@ export function generateS3Key(primaryKey: string, filePath: string): string {
     return `${process.env.GITHUB_REPOSITORY_ID}/${primaryKey}/${path.basename(filePath)}`;
 }
 
+// Expand a leading "~" to the runner's home directory. glob does not do this,
+// and a literal "~" directory never exists, so an unexpanded path resolves to
+// nothing and the cache silently no-ops. `path: ~/.cache/Cypress` is the
+// idiomatic form in actions/cache, so it has to work here too.
+function expandHome(pattern: string): string {
+    if (pattern === "~") {
+        return os.homedir();
+    }
+    if (pattern.startsWith("~/")) {
+        return path.join(os.homedir(), pattern.slice(2));
+    }
+    return pattern;
+}
+
 export async function resolvePaths(patterns: string[]): Promise<string[]> {
     const paths: string[] = [];
-    const workspace = process.env["GITHUB_WORKSPACE"] ?? process.cwd();
-    const globber = await glob.create(patterns.join("\n"), {
+    const globber = await glob.create(patterns.map(expandHome).join("\n"), {
         implicitDescendants: false
     });
 
+    // NO workspace filter. This function used to drop every resolved path that
+    // fell outside GITHUB_WORKSPACE, which silently broke every cache entry
+    // pointing at a system or home directory — the two most common ones being
+    // `/var/cache/apt/archives` and `~/.cache/Cypress`. Paths inside the repo
+    // (node_modules, public/packs-test) kept working, so it read as "that cache
+    // just never hits" rather than "save is a no-op", and survived for months.
+    //
+    // Nothing downstream needs workspace-relative paths: uploadToS3 tars with
+    // `-C dirname(p) basename(p)`, so an absolute path anywhere is fine.
     for await (const file of globber.globGenerator()) {
-        const relativeFile = path.relative(workspace, file);
-        // Only include files within the workspace
-        if (!relativeFile.startsWith("..")) {
-            paths.push(file);
-        }
+        paths.push(file);
     }
 
     return paths;

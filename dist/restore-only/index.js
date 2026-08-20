@@ -47326,8 +47326,17 @@ function compressDirectory(dirPath, key, useZstd) {
         if (useZstd) {
             // Use command-line tar with zstd for best performance
             return new Promise((resolve, reject) => {
+                // --ignore-failed-read: a cache directory is not guaranteed to be
+                // fully readable by the runner user. /var/cache/apt/archives holds a
+                // root-owned 0700 `partial/`, and GNU tar exits 2 on the first
+                // unreadable entry, aborting the whole archive. Without this flag the
+                // save fails and saveImpl downgrades it to a warning, so the job stays
+                // green and the cache is simply never written — which is exactly the
+                // EACCES on /var/cache/apt/archives/partial reported 2026-08-18.
+                // Skipping the unreadable entry is strictly better than caching nothing.
                 const proc = (0, child_process_1.spawn)('tar', [
                     '-cf', tempFile,
+                    '--ignore-failed-read',
                     '--use-compress-program=zstd',
                     '-C', path.dirname(dirPath),
                     path.basename(dirPath)
@@ -47335,7 +47344,13 @@ function compressDirectory(dirPath, key, useZstd) {
                     stdio: ['inherit', 'inherit', 'inherit']
                 });
                 proc.on('close', (code) => {
-                    if (code === 0) {
+                    // 0 = clean. 1 = "some files differ"/were skipped, which is the
+                    // documented exit for --ignore-failed-read having done its job;
+                    // the archive is valid and worth uploading. 2 is a real failure.
+                    if (code === 0 || code === 1) {
+                        if (code === 1) {
+                            core.warning(`tar skipped one or more unreadable entries under ${dirPath}; cached what it could`);
+                        }
                         resolve(tempFile);
                     }
                     else {
@@ -47346,10 +47361,15 @@ function compressDirectory(dirPath, key, useZstd) {
             });
         }
         else {
+            // Same tolerance on the node-tar fallback: warn on an unreadable entry
+            // rather than rejecting the whole archive.
             yield tar.create({
                 gzip: true,
                 file: tempFile,
-                cwd: path.dirname(dirPath)
+                cwd: path.dirname(dirPath),
+                onwarn: (code, message) => {
+                    core.warning(`tar: ${code}: ${message}`);
+                }
             }, [path.basename(dirPath)]);
             return tempFile;
         }
@@ -47674,6 +47694,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.isCacheFeatureAvailable = exports.resolvePaths = exports.generateS3Key = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
+const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
 const constants_1 = __nccwpck_require__(9042);
 function isGhes() {
@@ -47741,36 +47762,52 @@ function generateS3Key(primaryKey, filePath) {
     return `${process.env.GITHUB_REPOSITORY_ID}/${primaryKey}/${path.basename(filePath)}`;
 }
 exports.generateS3Key = generateS3Key;
+// Expand a leading "~" to the runner's home directory. glob does not do this,
+// and a literal "~" directory never exists, so an unexpanded path resolves to
+// nothing and the cache silently no-ops. `path: ~/.cache/Cypress` is the
+// idiomatic form in actions/cache, so it has to work here too.
+function expandHome(pattern) {
+    if (pattern === "~") {
+        return os.homedir();
+    }
+    if (pattern.startsWith("~/")) {
+        return path.join(os.homedir(), pattern.slice(2));
+    }
+    return pattern;
+}
 function resolvePaths(patterns) {
     var _a, e_1, _b, _c;
-    var _d;
     return __awaiter(this, void 0, void 0, function* () {
         const paths = [];
-        const workspace = (_d = process.env["GITHUB_WORKSPACE"]) !== null && _d !== void 0 ? _d : process.cwd();
-        const globber = yield glob.create(patterns.join("\n"), {
+        const globber = yield glob.create(patterns.map(expandHome).join("\n"), {
             implicitDescendants: false
         });
         try {
-            for (var _e = true, _f = __asyncValues(globber.globGenerator()), _g; _g = yield _f.next(), _a = _g.done, !_a;) {
-                _c = _g.value;
-                _e = false;
+            // NO workspace filter. This function used to drop every resolved path that
+            // fell outside GITHUB_WORKSPACE, which silently broke every cache entry
+            // pointing at a system or home directory — the two most common ones being
+            // `/var/cache/apt/archives` and `~/.cache/Cypress`. Paths inside the repo
+            // (node_modules, public/packs-test) kept working, so it read as "that cache
+            // just never hits" rather than "save is a no-op", and survived for months.
+            //
+            // Nothing downstream needs workspace-relative paths: uploadToS3 tars with
+            // `-C dirname(p) basename(p)`, so an absolute path anywhere is fine.
+            for (var _d = true, _e = __asyncValues(globber.globGenerator()), _f; _f = yield _e.next(), _a = _f.done, !_a;) {
+                _c = _f.value;
+                _d = false;
                 try {
                     const file = _c;
-                    const relativeFile = path.relative(workspace, file);
-                    // Only include files within the workspace
-                    if (!relativeFile.startsWith("..")) {
-                        paths.push(file);
-                    }
+                    paths.push(file);
                 }
                 finally {
-                    _e = true;
+                    _d = true;
                 }
             }
         }
         catch (e_1_1) { e_1 = { error: e_1_1 }; }
         finally {
             try {
-                if (!_e && !_a && (_b = _f.return)) yield _b.call(_f);
+                if (!_d && !_a && (_b = _e.return)) yield _b.call(_e);
             }
             finally { if (e_1) throw e_1.error; }
         }
