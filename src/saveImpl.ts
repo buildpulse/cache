@@ -62,14 +62,20 @@ export async function saveImpl(
         // Resolve glob patterns to actual file paths
         const cachePaths = await utils.resolvePaths(cachePathPatterns);
         if (cachePaths.length === 0) {
-            utils.logWarning(`No files found matching the cache path patterns: ${cachePathPatterns.join(", ")}`);
+            utils.logWarning(
+                `No files found matching the cache path patterns: ${cachePathPatterns.join(
+                    ", "
+                )}`
+            );
             return;
         }
         core.info(`Resolved cache paths: ${cachePaths.join(", ")}`);
 
         const bucketName = process.env.BP_CACHE_S3_BUCKET;
         if (!bucketName) {
-            throw new Error("BP_CACHE_S3_BUCKET environment variable is not set");
+            throw new Error(
+                "BP_CACHE_S3_BUCKET environment variable is not set"
+            );
         }
 
         // Initialize S3 client
@@ -84,7 +90,11 @@ export async function saveImpl(
                     cacheKey = s3Key;
                 }
             } catch (error) {
-                utils.logWarning(`Failed to upload ${cachePath} to S3: ${(error as Error).message}`);
+                utils.logWarning(
+                    `Failed to upload ${cachePath} to S3: ${
+                        (error as Error).message
+                    }`
+                );
             }
         }
 
@@ -95,7 +105,9 @@ export async function saveImpl(
         }
     } catch (error: unknown) {
         if (error instanceof Error) {
-            utils.logWarning(`Error saving cache to S3 (including potential compression errors): ${error.message}`);
+            utils.logWarning(
+                `Error saving cache to S3 (including potential compression errors): ${error.message}`
+            );
         } else {
             utils.logWarning(`Unknown error occurred while saving cache to S3`);
         }

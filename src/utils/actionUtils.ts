@@ -68,17 +68,20 @@ export function validateAwsCredentials(): boolean {
     // (EKS Pod Identity).
     const requiredVars = [
         ["BP_CACHE_AWS_REGION", "AWS_REGION"],
-        ["BP_CACHE_S3_BUCKET"],
+        ["BP_CACHE_S3_BUCKET"]
     ];
     const missingEnvVars = requiredVars
         .filter(vars => !vars.some(v => process.env[v]))
         .map(vars => vars[0]);
 
     if (missingEnvVars.length > 0) {
-        logWarning(`Missing required AWS environment variables: ${missingEnvVars.join(", ")}`);
+        logWarning(
+            `Missing required AWS environment variables: ${missingEnvVars.join(
+                ", "
+            )}`
+        );
         return false;
     }
-
 
     return true;
 }

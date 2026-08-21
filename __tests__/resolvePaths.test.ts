@@ -45,9 +45,9 @@ test("resolves a path OUTSIDE the workspace — the apt/Cypress case", async () 
     // The whole bug: this used to come back empty, saveImpl logged
     // "No files found matching the cache path patterns" and returned green.
     expect(resolved.length).toBeGreaterThan(0);
-    expect(resolved.some(p => p.includes(path.join("outside", "archives")))).toBe(
-        true
-    );
+    expect(
+        resolved.some(p => p.includes(path.join("outside", "archives")))
+    ).toBe(true);
 });
 
 test("still resolves a path inside the workspace", async () => {
