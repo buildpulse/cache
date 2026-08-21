@@ -1,9 +1,9 @@
 import * as core from "@actions/core";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import * as path from "path";
-import { S3Client, HeadObjectCommand } from "@aws-sdk/client-s3";
-import { initializeS3Client, downloadFromS3, s3Client } from "./s3Client";
 
 import { Events, Inputs, Outputs, State } from "./constants";
+import { downloadFromS3, initializeS3Client, s3Client } from "./s3Client";
 import {
     IStateProvider,
     NullStateProvider,

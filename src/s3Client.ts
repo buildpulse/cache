@@ -1,22 +1,22 @@
-import {
-    S3Client,
-    PutObjectCommand,
-    GetObjectCommand,
-    CreateMultipartUploadCommand,
-    UploadPartCommand,
-    CompleteMultipartUploadCommand,
-    AbortMultipartUploadCommand
-} from "@aws-sdk/client-s3";
-import { Readable, pipeline, PassThrough } from "stream";
-import { promisify } from "util";
 import * as core from "@actions/core";
+import {
+    AbortMultipartUploadCommand,
+    CompleteMultipartUploadCommand,
+    CreateMultipartUploadCommand,
+    GetObjectCommand,
+    PutObjectCommand,
+    S3Client,
+    UploadPartCommand
+} from "@aws-sdk/client-s3";
+import { spawn } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
+import { PassThrough, pipeline, Readable } from "stream";
+import * as tar from "tar";
+import { promisify } from "util";
 import { createGunzip, createGzip } from "zlib";
 import * as zlib from "zlib";
-import * as tar from "tar";
-import * as os from "os";
-import { spawn } from "child_process";
 
 export let s3Client: S3Client;
 
@@ -49,7 +49,7 @@ function createZstdDecompressStream(): NodeJS.ReadWriteStream {
 }
 
 // Create a zstd compression stream using command-line zstd
-function createZstdCompressStream(level: number = 3): NodeJS.ReadWriteStream {
+function createZstdCompressStream(level = 3): NodeJS.ReadWriteStream {
     const proc = spawn("zstd", [`-${level}`, "--stdout"], {
         stdio: ["pipe", "pipe", "inherit"]
     });
@@ -271,7 +271,7 @@ export async function uploadToS3(
             const fileStream = fs.createReadStream(compressedFilePath, {
                 highWaterMark: chunkSize
             });
-            let partBuffer = Buffer.alloc(0);
+            const partBuffer = Buffer.alloc(0);
 
             for await (const chunk of fileStream) {
                 const uploadPartCommand = new UploadPartCommand({

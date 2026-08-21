@@ -3,7 +3,7 @@ import * as glob from "@actions/glob";
 import * as os from "os";
 import * as path from "path";
 
-import { RefKey, Inputs } from "../constants";
+import { Inputs, RefKey } from "../constants";
 
 export function isGhes(): boolean {
     const ghUrl = new URL(
