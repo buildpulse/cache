@@ -102,7 +102,7 @@ export function generateS3Key(primaryKey: string, filePath: string): string {
 // and a literal "~" directory never exists, so an unexpanded path resolves to
 // nothing and the cache silently no-ops. `path: ~/.cache/Cypress` is the
 // idiomatic form in actions/cache, so it has to work here too.
-function expandHome(pattern: string): string {
+export function expandHome(pattern: string): string {
     if (pattern === "~") {
         return os.homedir();
     }
@@ -110,6 +110,22 @@ function expandHome(pattern: string): string {
         return path.join(os.homedir(), pattern.slice(2));
     }
     return pattern;
+}
+
+// Which paths should restore actually write to?
+//
+// On restore the target usually does not exist yet, so the globber matches
+// nothing and we must fall back to the raw `path` inputs. Those inputs are used
+// directly as the tar extraction destination, so they have to be home-expanded
+// first: `path.dirname("~/x")` is "~", which silently extracts the archive into
+// a directory named "~" under the CWD while the action still reports a cache
+// hit. Split out from restoreImpl so this branch is testable without mocking
+// S3 — the defect lived in the one path unit tests never reached.
+export function effectiveCachePaths(
+    resolved: string[],
+    patterns: string[]
+): string[] {
+    return resolved.length > 0 ? resolved : patterns.map(expandHome);
 }
 
 export async function resolvePaths(patterns: string[]): Promise<string[]> {

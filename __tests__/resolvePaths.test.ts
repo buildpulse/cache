@@ -79,3 +79,68 @@ test("a pattern matching nothing still resolves to empty", async () => {
     ]);
     expect(resolved).toEqual([]);
 });
+
+// The restore path takes a SECOND route to the filesystem. On restore the
+// target usually does not exist yet, so the globber matches nothing and
+// restoreImpl falls back to the raw `path` inputs — which are then used as the
+// tar extraction destination. An unexpanded "~/x" makes path.dirname() return
+// "~", so the archive is written to a directory literally named "~" under the
+// CWD while the action still reports cache-hit=true. Caught by an out-of-
+// workspace e2e; resolvePaths' own expansion does not cover this route.
+describe("expandHome", () => {
+    it("expands a bare ~ to the home directory", () => {
+        expect(actionUtils.expandHome("~")).toBe(os.homedir());
+    });
+
+    it("expands a leading ~/ so dirname() yields a real parent", () => {
+        const expanded = actionUtils.expandHome("~/.cache/Cypress");
+        expect(expanded).toBe(path.join(os.homedir(), ".cache", "Cypress"));
+        // The actual defect: dirname of the raw pattern is "~".
+        expect(path.dirname(expanded)).not.toBe("~");
+        expect(path.isAbsolute(expanded)).toBe(true);
+    });
+
+    it("leaves absolute and relative paths untouched", () => {
+        expect(actionUtils.expandHome("/var/cache/apt/archives")).toBe(
+            "/var/cache/apt/archives"
+        );
+        expect(actionUtils.expandHome("node_modules")).toBe("node_modules");
+    });
+
+    it("does not expand a ~ that is not a home reference", () => {
+        // "~foo" is a username reference, not this action's job to resolve.
+        expect(actionUtils.expandHome("~foo/bar")).toBe("~foo/bar");
+        expect(actionUtils.expandHome("dir/~/x")).toBe("dir/~/x");
+    });
+});
+
+// This is the branch the out-of-workspace e2e caught: save succeeded, restore
+// reported cache-hit=true, and the files landed in "./~/..." instead of $HOME.
+// These assertions fail against the pre-fix fallback (`: patterns`).
+describe("effectiveCachePaths — the restore fallback", () => {
+    it("home-expands the fallback when nothing resolved", () => {
+        const out = actionUtils.effectiveCachePaths([], ["~/.cache/Cypress"]);
+        expect(out).toEqual([path.join(os.homedir(), ".cache", "Cypress")]);
+        // The defect in one assertion: dirname is the tar extraction target.
+        expect(path.dirname(out[0])).not.toBe("~");
+    });
+
+    it("prefers resolved paths when the target already exists", () => {
+        const resolved = ["/tmp/already/there"];
+        expect(
+            actionUtils.effectiveCachePaths(resolved, ["~/ignored"])
+        ).toEqual(resolved);
+    });
+
+    it("expands every pattern, not just the first", () => {
+        const out = actionUtils.effectiveCachePaths(
+            [],
+            ["~/a", "/var/cache/apt/archives", "~/b"]
+        );
+        expect(out).toEqual([
+            path.join(os.homedir(), "a"),
+            "/var/cache/apt/archives",
+            path.join(os.homedir(), "b")
+        ]);
+    });
+});
