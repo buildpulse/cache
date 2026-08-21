@@ -51300,7 +51300,7 @@ var Inputs;
     Inputs["UploadChunkSize"] = "upload-chunk-size";
     Inputs["EnableCrossOsArchive"] = "enableCrossOsArchive";
     Inputs["FailOnCacheMiss"] = "fail-on-cache-miss";
-    Inputs["LookupOnly"] = "lookup-only";
+    Inputs["LookupOnly"] = "lookup-only"; // Input for cache, restore action
 })(Inputs = exports.Inputs || (exports.Inputs = {}));
 var Outputs;
 (function (Outputs) {
@@ -51370,31 +51370,31 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.downloadFromS3 = exports.uploadToS3 = exports.initializeS3Client = exports.s3Client = void 0;
-const client_s3_1 = __nccwpck_require__(9250);
-const stream_1 = __nccwpck_require__(2781);
-const util_1 = __nccwpck_require__(3837);
 const core = __importStar(__nccwpck_require__(2186));
+const client_s3_1 = __nccwpck_require__(9250);
+const child_process_1 = __nccwpck_require__(2081);
 const fs = __importStar(__nccwpck_require__(7147));
+const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
+const stream_1 = __nccwpck_require__(2781);
+const tar = __importStar(__nccwpck_require__(4674));
+const util_1 = __nccwpck_require__(3837);
 const zlib_1 = __nccwpck_require__(9796);
 const zlib = __importStar(__nccwpck_require__(9796));
-const tar = __importStar(__nccwpck_require__(4674));
-const os = __importStar(__nccwpck_require__(2037));
-const child_process_1 = __nccwpck_require__(2081);
 // Check if zstd is available on the system
 function isZstdAvailable() {
     return __awaiter(this, void 0, void 0, function* () {
-        return new Promise((resolve) => {
-            const proc = (0, child_process_1.spawn)('zstd', ['--version']);
-            proc.on('close', (code) => resolve(code === 0));
-            proc.on('error', () => resolve(false));
+        return new Promise(resolve => {
+            const proc = (0, child_process_1.spawn)("zstd", ["--version"]);
+            proc.on("close", code => resolve(code === 0));
+            proc.on("error", () => resolve(false));
         });
     });
 }
 // Create a zstd decompression stream using command-line zstd
 function createZstdDecompressStream() {
-    const proc = (0, child_process_1.spawn)('zstd', ['-d', '--stdout'], {
-        stdio: ['pipe', 'pipe', 'inherit']
+    const proc = (0, child_process_1.spawn)("zstd", ["-d", "--stdout"], {
+        stdio: ["pipe", "pipe", "inherit"]
     });
     const passThrough = new stream_1.PassThrough();
     proc.stdout.pipe(passThrough);
@@ -51407,8 +51407,8 @@ function createZstdDecompressStream() {
 }
 // Create a zstd compression stream using command-line zstd
 function createZstdCompressStream(level = 3) {
-    const proc = (0, child_process_1.spawn)('zstd', [`-${level}`, '--stdout'], {
-        stdio: ['pipe', 'pipe', 'inherit']
+    const proc = (0, child_process_1.spawn)("zstd", [`-${level}`, "--stdout"], {
+        stdio: ["pipe", "pipe", "inherit"]
     });
     const passThrough = new stream_1.PassThrough();
     proc.stdout.pipe(passThrough);
@@ -51422,7 +51422,8 @@ function initializeS3Client() {
         return exports.s3Client;
     }
     const accessKeyId = process.env.BP_CACHE_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.BP_CACHE_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+    const secretAccessKey = process.env.BP_CACHE_AWS_SECRET_ACCESS_KEY ||
+        process.env.AWS_SECRET_ACCESS_KEY;
     const region = process.env.BP_CACHE_AWS_REGION || process.env.AWS_REGION;
     if (!region) {
         throw new Error("AWS region not provided (set BP_CACHE_AWS_REGION or AWS_REGION)");
@@ -51437,7 +51438,7 @@ function initializeS3Client() {
     // Passing credentials: undefined still overrides the chain in some SDK paths —
     // omit the field entirely when using Pod Identity.
     const clientConfig = {
-        region,
+        region
     };
     if (accessKeyId && secretAccessKey) {
         core.info("[S3] Using static access keys from env");
@@ -51452,21 +51453,21 @@ function initializeS3Client() {
 exports.initializeS3Client = initializeS3Client;
 function compressData(filePath, key, useZstd) {
     return __awaiter(this, void 0, void 0, function* () {
-        const ext = useZstd ? '.zst' : '.gz';
+        const ext = useZstd ? ".zst" : ".gz";
         const compressedFilePath = path.join(os.tmpdir(), `${path.basename(key)}${ext}`);
         const fileContent = yield fs.promises.readFile(filePath);
         return new Promise((resolve, reject) => {
             const writeStream = fs.createWriteStream(compressedFilePath);
             if (useZstd) {
-                const proc = (0, child_process_1.spawn)('zstd', ['-3', '--stdout'], {
-                    stdio: ['pipe', 'pipe', 'inherit']
+                const proc = (0, child_process_1.spawn)("zstd", ["-3", "--stdout"], {
+                    stdio: ["pipe", "pipe", "inherit"]
                 });
                 const readStream = stream_1.Readable.from(fileContent);
                 readStream.pipe(proc.stdin);
                 proc.stdout.pipe(writeStream);
-                writeStream.on('finish', () => resolve(compressedFilePath));
-                writeStream.on('error', reject);
-                proc.on('error', reject);
+                writeStream.on("finish", () => resolve(compressedFilePath));
+                writeStream.on("error", reject);
+                proc.on("error", reject);
             }
             else {
                 const gzip = zlib.createGzip();
@@ -51474,43 +51475,64 @@ function compressData(filePath, key, useZstd) {
                 readStream
                     .pipe(gzip)
                     .pipe(writeStream)
-                    .on('finish', () => resolve(compressedFilePath))
-                    .on('error', reject);
+                    .on("finish", () => resolve(compressedFilePath))
+                    .on("error", reject);
             }
         });
     });
 }
 function compressDirectory(dirPath, key, useZstd) {
     return __awaiter(this, void 0, void 0, function* () {
-        const ext = useZstd ? '.tar.zst' : '.tar.gz';
+        const ext = useZstd ? ".tar.zst" : ".tar.gz";
         const tempFile = path.join(os.tmpdir(), `${path.basename(key)}${ext}`);
         if (useZstd) {
             // Use command-line tar with zstd for best performance
             return new Promise((resolve, reject) => {
-                const proc = (0, child_process_1.spawn)('tar', [
-                    '-cf', tempFile,
-                    '--use-compress-program=zstd',
-                    '-C', path.dirname(dirPath),
+                // --ignore-failed-read: a cache directory is not guaranteed to be
+                // fully readable by the runner user. /var/cache/apt/archives holds a
+                // root-owned 0700 `partial/`, and GNU tar exits 2 on the first
+                // unreadable entry, aborting the whole archive. Without this flag the
+                // save fails and saveImpl downgrades it to a warning, so the job stays
+                // green and the cache is simply never written. Skipping the unreadable
+                // entry is strictly better than caching nothing.
+                const proc = (0, child_process_1.spawn)("tar", [
+                    "-cf",
+                    tempFile,
+                    "--ignore-failed-read",
+                    "--use-compress-program=zstd",
+                    "-C",
+                    path.dirname(dirPath),
                     path.basename(dirPath)
                 ], {
-                    stdio: ['inherit', 'inherit', 'inherit']
+                    stdio: ["inherit", "inherit", "inherit"]
                 });
-                proc.on('close', (code) => {
-                    if (code === 0) {
+                proc.on("close", code => {
+                    // 0 = clean. 1 = "some files differ"/were skipped, which is the
+                    // documented exit for --ignore-failed-read having done its job;
+                    // the archive is valid and worth uploading. 2 is a real failure.
+                    if (code === 0 || code === 1) {
+                        if (code === 1) {
+                            core.warning(`tar skipped one or more unreadable entries under ${dirPath}; cached what it could`);
+                        }
                         resolve(tempFile);
                     }
                     else {
                         reject(new Error(`tar exited with code ${code}`));
                     }
                 });
-                proc.on('error', reject);
+                proc.on("error", reject);
             });
         }
         else {
+            // Same tolerance on the node-tar fallback: warn on an unreadable entry
+            // rather than rejecting the whole archive.
             yield tar.create({
                 gzip: true,
                 file: tempFile,
-                cwd: path.dirname(dirPath)
+                cwd: path.dirname(dirPath),
+                onwarn: (code, message) => {
+                    core.warning(`tar: ${code}: ${message}`);
+                }
             }, [path.basename(dirPath)]);
             return tempFile;
         }
@@ -51560,8 +51582,10 @@ function uploadToS3(bucketName, key, filePath) {
             const parts = [];
             try {
                 let partNumber = 1;
-                const fileStream = fs.createReadStream(compressedFilePath, { highWaterMark: chunkSize });
-                let partBuffer = Buffer.alloc(0);
+                const fileStream = fs.createReadStream(compressedFilePath, {
+                    highWaterMark: chunkSize
+                });
+                const partBuffer = Buffer.alloc(0);
                 try {
                     for (var _d = true, fileStream_1 = __asyncValues(fileStream), fileStream_1_1; fileStream_1_1 = yield fileStream_1.next(), _a = fileStream_1_1.done, !_a;) {
                         _c = fileStream_1_1.value;
@@ -51607,7 +51631,7 @@ function uploadToS3(bucketName, key, filePath) {
                 throw error;
             }
         }
-        core.info(`Successfully uploaded ${isCompressed ? 'compressed ' : ''}${filePath} to S3 bucket ${bucketName} with key ${key}`);
+        core.info(`Successfully uploaded ${isCompressed ? "compressed " : ""}${filePath} to S3 bucket ${bucketName} with key ${key}`);
     });
 }
 exports.uploadToS3 = uploadToS3;
@@ -51616,16 +51640,20 @@ exports.uploadToS3 = uploadToS3;
 // zstd: 0x28 0xb5 0x2f 0xfd
 function detectCompressionFormat(header) {
     if (header.length >= 2 && header[0] === 0x1f && header[1] === 0x8b) {
-        return 'gzip';
+        return "gzip";
     }
-    if (header.length >= 4 && header[0] === 0x28 && header[1] === 0xb5 && header[2] === 0x2f && header[3] === 0xfd) {
-        return 'zstd';
+    if (header.length >= 4 &&
+        header[0] === 0x28 &&
+        header[1] === 0xb5 &&
+        header[2] === 0x2f &&
+        header[3] === 0xfd) {
+        return "zstd";
     }
-    return 'unknown';
+    return "unknown";
 }
 function downloadFromS3(bucketName, key, destinationPath) {
     return __awaiter(this, void 0, void 0, function* () {
-        const directory = path.dirname(destinationPath) || '.';
+        const directory = path.dirname(destinationPath) || ".";
         const client = initializeS3Client();
         const command = new client_s3_1.GetObjectCommand({
             Bucket: bucketName,
@@ -51637,7 +51665,7 @@ function downloadFromS3(bucketName, key, destinationPath) {
                 throw new Error("Invalid response body from S3");
             }
             // Ensure destination directory exists
-            if (directory && directory !== '.') {
+            if (directory && directory !== ".") {
                 fs.mkdirSync(directory, { recursive: true });
             }
             // Download to temp file first (more reliable than streaming with format detection)
@@ -51645,19 +51673,25 @@ function downloadFromS3(bucketName, key, destinationPath) {
             const writeStream = fs.createWriteStream(tempFile);
             yield (0, util_1.promisify)(stream_1.pipeline)(Body, writeStream);
             // Detect format from temp file
-            const fd = yield fs.promises.open(tempFile, 'r');
+            const fd = yield fs.promises.open(tempFile, "r");
             const header = Buffer.alloc(4);
             yield fd.read(header, 0, 4, 0);
             yield fd.close();
             const format = detectCompressionFormat(header);
             const zstdAvailable = yield isZstdAvailable();
-            if (format === 'zstd' && zstdAvailable) {
+            if (format === "zstd" && zstdAvailable) {
                 core.info(`Detected zstd compression, extracting with zstd`);
                 yield new Promise((resolve, reject) => {
-                    const tarProc = (0, child_process_1.spawn)('tar', ['-xf', tempFile, '--use-compress-program=zstd', '-C', directory || '.'], {
-                        stdio: ['inherit', 'inherit', 'inherit']
+                    const tarProc = (0, child_process_1.spawn)("tar", [
+                        "-xf",
+                        tempFile,
+                        "--use-compress-program=zstd",
+                        "-C",
+                        directory || "."
+                    ], {
+                        stdio: ["inherit", "inherit", "inherit"]
                     });
-                    tarProc.on('close', (code) => {
+                    tarProc.on("close", code => {
                         if (code === 0) {
                             resolve();
                         }
@@ -51665,12 +51699,12 @@ function downloadFromS3(bucketName, key, destinationPath) {
                             reject(new Error(`tar exited with code ${code}`));
                         }
                     });
-                    tarProc.on('error', reject);
+                    tarProc.on("error", reject);
                 });
             }
-            else if (format === 'gzip' || format === 'unknown') {
+            else if (format === "gzip" || format === "unknown") {
                 core.info(`Detected gzip compression, extracting with gzip`);
-                yield (0, util_1.promisify)(stream_1.pipeline)(fs.createReadStream(tempFile), (0, zlib_1.createGunzip)(), tar.extract({ cwd: directory || '.' }));
+                yield (0, util_1.promisify)(stream_1.pipeline)(fs.createReadStream(tempFile), (0, zlib_1.createGunzip)(), tar.extract({ cwd: directory || "." }));
             }
             else {
                 // zstd format but zstd not available
@@ -51688,23 +51722,23 @@ function downloadFromS3(bucketName, key, destinationPath) {
 exports.downloadFromS3 = downloadFromS3;
 function isTarFile(filePath) {
     return __awaiter(this, void 0, void 0, function* () {
-        const fd = yield fs.promises.open(filePath, 'r');
+        const fd = yield fs.promises.open(filePath, "r");
         const buffer = Buffer.alloc(512); // Read the first 512 bytes (tar header size)
         yield fd.read(buffer, 0, 512, 0);
         yield fd.close();
         // The magic number "ustar" is located at byte positions 257-262
-        const tarMagic = buffer.toString('ascii', 257, 262);
-        return tarMagic === 'ustar';
+        const tarMagic = buffer.toString("ascii", 257, 262);
+        return tarMagic === "ustar";
     });
 }
 function isTarGz(filePath) {
     return __awaiter(this, void 0, void 0, function* () {
-        const fd = yield fs.promises.open(filePath, 'r');
+        const fd = yield fs.promises.open(filePath, "r");
         const buffer = Buffer.alloc(262);
         yield fd.read(buffer, 0, 262, 0);
         yield fd.close();
         const isGzip = buffer[0] === 0x1f && buffer[1] === 0x8b;
-        const isTar = buffer.toString('ascii', 257, 262) === 'ustar';
+        const isTar = buffer.toString("ascii", 257, 262) === "ustar";
         return isGzip && isTar;
     });
 }
@@ -52008,6 +52042,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.isCacheFeatureAvailable = exports.resolvePaths = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
+const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
 const constants_1 = __nccwpck_require__(9042);
 function isGhes() {
@@ -52060,7 +52095,7 @@ function validateAwsCredentials() {
     // (EKS Pod Identity).
     const requiredVars = [
         ["BP_CACHE_AWS_REGION", "AWS_REGION"],
-        ["BP_CACHE_S3_BUCKET"],
+        ["BP_CACHE_S3_BUCKET"]
     ];
     const missingEnvVars = requiredVars
         .filter(vars => !vars.some(v => process.env[v]))
@@ -52084,36 +52119,52 @@ function generateS3Key(primaryKey, filePath) {
     return cacheObjectKey(primaryKey, filePath);
 }
 exports.generateS3Key = generateS3Key;
+// Expand a leading "~" to the runner's home directory. glob does not do this,
+// and a literal "~" directory never exists, so an unexpanded path resolves to
+// nothing and the cache silently no-ops. `path: ~/.cache/Cypress` is the
+// idiomatic form in actions/cache, so it has to work here too.
+function expandHome(pattern) {
+    if (pattern === "~") {
+        return os.homedir();
+    }
+    if (pattern.startsWith("~/")) {
+        return path.join(os.homedir(), pattern.slice(2));
+    }
+    return pattern;
+}
 function resolvePaths(patterns) {
     var _a, e_1, _b, _c;
-    var _d;
     return __awaiter(this, void 0, void 0, function* () {
         const paths = [];
-        const workspace = (_d = process.env["GITHUB_WORKSPACE"]) !== null && _d !== void 0 ? _d : process.cwd();
-        const globber = yield glob.create(patterns.join("\n"), {
+        const globber = yield glob.create(patterns.map(expandHome).join("\n"), {
             implicitDescendants: false
         });
         try {
-            for (var _e = true, _f = __asyncValues(globber.globGenerator()), _g; _g = yield _f.next(), _a = _g.done, !_a;) {
-                _c = _g.value;
-                _e = false;
+            // NO workspace filter. This function used to drop every resolved path that
+            // fell outside GITHUB_WORKSPACE, which silently broke every cache entry
+            // pointing at a system or home directory — the two most common ones being
+            // `/var/cache/apt/archives` and `~/.cache/Cypress`. Paths inside the repo
+            // (node_modules, public/packs-test) kept working, so it read as "that cache
+            // just never hits" rather than "save is a no-op", and survived for months.
+            //
+            // Nothing downstream needs workspace-relative paths: uploadToS3 tars with
+            // `-C dirname(p) basename(p)`, so an absolute path anywhere is fine.
+            for (var _d = true, _e = __asyncValues(globber.globGenerator()), _f; _f = yield _e.next(), _a = _f.done, !_a;) {
+                _c = _f.value;
+                _d = false;
                 try {
                     const file = _c;
-                    const relativeFile = path.relative(workspace, file);
-                    // Only include files within the workspace
-                    if (!relativeFile.startsWith("..")) {
-                        paths.push(file);
-                    }
+                    paths.push(file);
                 }
                 finally {
-                    _e = true;
+                    _d = true;
                 }
             }
         }
         catch (e_1_1) { e_1 = { error: e_1_1 }; }
         finally {
             try {
-                if (!_e && !_a && (_b = _f.return)) yield _b.call(_f);
+                if (!_d && !_a && (_b = _e.return)) yield _b.call(_e);
             }
             finally { if (e_1) throw e_1.error; }
         }

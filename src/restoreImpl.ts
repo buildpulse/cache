@@ -1,9 +1,9 @@
 import * as core from "@actions/core";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import * as path from "path";
-import { S3Client, HeadObjectCommand } from "@aws-sdk/client-s3";
-import { initializeS3Client, downloadFromS3, s3Client } from "./s3Client";
 
 import { Events, Inputs, Outputs, State } from "./constants";
+import { downloadFromS3, initializeS3Client, s3Client } from "./s3Client";
 import {
     IStateProvider,
     NullStateProvider,
@@ -46,11 +46,12 @@ export async function restoreImpl(
         // For restore, paths may not exist yet (they'll be created by restore)
         // so we use the raw patterns as fallback for basename extraction
         const cachePaths = await utils.resolvePaths(cachePathPatterns);
-        const effectivePaths = cachePaths.length > 0 ? cachePaths : cachePathPatterns;
+        const effectivePaths =
+            cachePaths.length > 0 ? cachePaths : cachePathPatterns;
 
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);
-        const bucketName = process.env.BP_CACHE_S3_BUCKET || '';
+        const bucketName = process.env.BP_CACHE_S3_BUCKET || "";
 
         // Initialize S3 client
         initializeS3Client();
@@ -66,11 +67,13 @@ export async function restoreImpl(
                     });
                     try {
                         await s3Client.send(headObjectCommand);
-                        core.info(`Cache found and can be restored from key: ${s3Key}`);
+                        core.info(
+                            `Cache found and can be restored from key: ${s3Key}`
+                        );
                         cacheKey = s3Key;
                         break;
                     } catch (headError) {
-                        if ((headError as any).name !== 'NotFound') {
+                        if ((headError as any).name !== "NotFound") {
                             throw headError;
                         }
                     }
@@ -82,18 +85,27 @@ export async function restoreImpl(
 
                         core.info(`Pulling ${s3Key}`);
                         const destinationPath = cachePath;
-                        await downloadFromS3(bucketName, s3Key, destinationPath);
+                        await downloadFromS3(
+                            bucketName,
+                            s3Key,
+                            destinationPath
+                        );
                     }
                     cacheKey = s3Key;
                     core.info(`Cache restored from key: ${cacheKey}`);
                     break;
                 }
             } catch (error) {
-                core.info(`Failed to restore cache from key ${s3Key}: ${(error as Error).message}`);
+                core.info(
+                    `Failed to restore cache from key ${s3Key}: ${
+                        (error as Error).message
+                    }`
+                );
             }
         }
 
-        const isExactKeyMatch = cacheKey === utils.cacheObjectKey(primaryKey, effectivePaths[0]);
+        const isExactKeyMatch =
+            cacheKey === utils.cacheObjectKey(primaryKey, effectivePaths[0]);
         core.setOutput(Outputs.CacheHit, isExactKeyMatch.toString());
 
         if (!cacheKey) {
@@ -104,16 +116,13 @@ export async function restoreImpl(
                 );
             }
             core.info(
-                `Cache not found for input keys: ${[
-                    ...allKeys
-                ].join(", ")}`
+                `Cache not found for input keys: ${[...allKeys].join(", ")}`
             );
             return undefined;
         }
 
         // Store the matched cache key in states
         stateProvider.setState(State.CacheMatchedKey, cacheKey);
-
     } catch (error: unknown) {
         core.setFailed((error as Error).message);
         if (earlyExit) {
