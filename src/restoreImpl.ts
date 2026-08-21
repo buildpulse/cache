@@ -42,12 +42,19 @@ export async function restoreImpl(
             required: true
         });
 
-        // Resolve glob patterns to actual file paths
-        // For restore, paths may not exist yet (they'll be created by restore)
-        // so we use the raw patterns as fallback for basename extraction
+        // Resolve glob patterns to actual file paths.
+        // On restore the target usually does NOT exist yet — that is the whole
+        // point — so the globber matches nothing and we fall back to the raw
+        // patterns. That fallback must still be home-expanded: `effectivePaths`
+        // becomes the tar extraction destination below, and a literal "~/x"
+        // makes `path.dirname` return "~", so the archive lands in a directory
+        // named "~" under the CWD while the action still reports a cache hit.
+        // resolvePaths() expands internally, so only the fallback needs it.
         const cachePaths = await utils.resolvePaths(cachePathPatterns);
-        const effectivePaths =
-            cachePaths.length > 0 ? cachePaths : cachePathPatterns;
+        const effectivePaths = utils.effectiveCachePaths(
+            cachePaths,
+            cachePathPatterns
+        );
 
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);

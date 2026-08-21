@@ -52039,7 +52039,7 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.isCacheFeatureAvailable = exports.resolvePaths = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
+exports.isCacheFeatureAvailable = exports.resolvePaths = exports.effectiveCachePaths = exports.expandHome = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
 const os = __importStar(__nccwpck_require__(2037));
@@ -52132,6 +52132,20 @@ function expandHome(pattern) {
     }
     return pattern;
 }
+exports.expandHome = expandHome;
+// Which paths should restore actually write to?
+//
+// On restore the target usually does not exist yet, so the globber matches
+// nothing and we must fall back to the raw `path` inputs. Those inputs are used
+// directly as the tar extraction destination, so they have to be home-expanded
+// first: `path.dirname("~/x")` is "~", which silently extracts the archive into
+// a directory named "~" under the CWD while the action still reports a cache
+// hit. Split out from restoreImpl so this branch is testable without mocking
+// S3 — the defect lived in the one path unit tests never reached.
+function effectiveCachePaths(resolved, patterns) {
+    return resolved.length > 0 ? resolved : patterns.map(expandHome);
+}
+exports.effectiveCachePaths = effectiveCachePaths;
 function resolvePaths(patterns) {
     var _a, e_1, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
