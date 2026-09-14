@@ -31,7 +31,7 @@ steps:
   - name: Build artifacts
     run: /build.sh
 
-  - uses: buildpulse/cache/save@v4
+  - uses: buildpulse/cache/save@v7
     id: cache
     with:
       path: path/to/dependencies
@@ -47,7 +47,7 @@ Let's say we have a restore step that computes a key at runtime.
 #### Restore a cache
 
 ```yaml
-uses: buildpulse/cache/restore@v4
+uses: buildpulse/cache/restore@v7
 id: restore-cache
 with:
     key: cache-${{ hashFiles('**/lockfiles') }}
@@ -55,7 +55,7 @@ with:
 
 #### Case 1 - Where a user would want to reuse the key as it is
 ```yaml
-uses: buildpulse/cache/save@v4
+uses: buildpulse/cache/save@v7
 with:
     key: ${{ steps.restore-cache.outputs.cache-primary-key }}
 ```
@@ -63,7 +63,7 @@ with:
 #### Case 2 - Where the user would want to re-evaluate the key
 
 ```yaml
-uses: buildpulse/cache/save@v4
+uses: buildpulse/cache/save@v7
 with:
     key: npm-cache-${{hashfiles(package-lock.json)}}
 ```
@@ -80,7 +80,7 @@ steps:
   .
   - name: Build
     run: /build.sh
-  - uses: buildpulse/cache/save@v4
+  - uses: buildpulse/cache/save@v7
     if: always() // or any other condition to invoke the save action
     with:
       path: path/to/dependencies

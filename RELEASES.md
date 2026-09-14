@@ -1,5 +1,15 @@
 # Releases
 
+### 7.0.0
+
+- **Breaking (auth): the action no longer reads `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from the job environment.** It used to, and it took them ahead of everything else, so a workflow that configured AWS for its own purposes had those credentials used against the cache bucket instead of the ones the runner supplied. Configure the cache explicitly with the new inputs, or let the runner supply it.
+- **New inputs:** `aws-access-key-id`, `aws-secret-access-key`, `aws-session-token`, `aws-credentials-file`, `aws-profile`, `aws-region`. All optional; a runner that provides credentials still needs none of them.
+- **A credentials file is now located by absolute path**, from the `aws-credentials-file` input or `BP_CACHE_AWS_CREDENTIALS_FILE`, instead of by expanding `$HOME`. A job that changed `HOME` previously lost its credentials and the cache silently stopped working.
+- Temporary credentials now work: a session token is carried from `aws-session-token` or `BP_CACHE_AWS_SESSION_TOKEN`. Passing temporary keys without their token produced a signature error naming the key, which read as the wrong problem.
+- **A cache that cannot authenticate is now reported as an error annotation, not as a cache miss.** New `cache-error` output, and a new `on-cache-error` input (`warn`, the default, or `error` to fail the step). `fail-on-cache-miss` is unchanged and still covers the genuine-miss case.
+- Warnings are real warnings. `logWarning` was `core.info` with a `[warning]` prefix, so nothing it reported produced an annotation.
+- Fixed `restore-keys` dropping its first entry.
+
 ### 6.0.0
 
 - **Breaking (auth):** Static `BP_CACHE_AWS_*` / `AWS_*` keys are optional. When absent, the action uses the AWS SDK default credential provider chain (EKS Pod Identity / IRSA).

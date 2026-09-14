@@ -4,6 +4,11 @@ import * as os from "os";
 import * as path from "path";
 
 import { Inputs, RefKey } from "../constants";
+import {
+    CredentialSource,
+    resolveCredentials,
+    resolveRegion
+} from "../credentials";
 
 export function isGhes(): boolean {
     const ghUrl = new URL(
@@ -21,9 +26,23 @@ export function isExactKeyMatch(key: string, cacheKey?: string): boolean {
     );
 }
 
+/**
+ * A real warning. This used to be `core.info` with a literal "[warning]"
+ * prefix, which produces no workflow command, so nothing it reported appeared
+ * as an annotation, in the job summary, or in the Checks API -- every caller
+ * believed it was warning and none of it was visible.
+ */
 export function logWarning(message: string): void {
-    const warningPrefix = "[warning]";
-    core.info(`${warningPrefix}${message}`);
+    core.warning(message);
+}
+
+/**
+ * Whether a cache failure that is not a plain miss should fail the step.
+ * Default is to keep the job green, because a cache is an optimisation; a
+ * workflow that would rather know can set on-cache-error: error.
+ */
+export function failOnCacheError(): boolean {
+    return core.getInput(Inputs.OnCacheError).trim().toLowerCase() === "error";
 }
 
 // Cache token authorized for all events that are tied to a ref
@@ -62,23 +81,35 @@ export function getInputAsBool(
     return result.toLowerCase() === "true";
 }
 
+/**
+ * Whether this job is configured to use the cache at all.
+ *
+ * "Not configured" is a different thing from "configured and failing", and the
+ * two must not share a message: the first is normal on a runner without the
+ * cache, the second is a defect. This only answers the first question --
+ * whether a bucket, a region and some credential source are present. Whether
+ * those credentials actually work is answered later, loudly, by cacheErrors.
+ */
 export function validateAwsCredentials(): boolean {
-    // Bucket + region are always required. Static access keys are optional —
-    // when absent, buildpulse/cache@v6 uses the SDK default provider chain
-    // (EKS Pod Identity).
-    const requiredVars = [
-        ["BP_CACHE_AWS_REGION", "AWS_REGION"],
-        ["BP_CACHE_S3_BUCKET"]
-    ];
-    const missingEnvVars = requiredVars
-        .filter(vars => !vars.some(v => process.env[v]))
-        .map(vars => vars[0]);
+    const missing: string[] = [];
+    if (!process.env.BP_CACHE_S3_BUCKET) {
+        missing.push("a bucket (BP_CACHE_S3_BUCKET)");
+    }
+    if (!resolveRegion().region) {
+        missing.push("a region (aws-region input or BP_CACHE_AWS_REGION)");
+    }
+    if (resolveCredentials().source === CredentialSource.None) {
+        missing.push(
+            "credentials (aws-access-key-id/aws-secret-access-key or " +
+                "aws-credentials-file inputs, or BP_CACHE_AWS_CREDENTIALS_FILE)"
+        );
+    }
 
-    if (missingEnvVars.length > 0) {
+    if (missing.length > 0) {
         logWarning(
-            `Missing required AWS environment variables: ${missingEnvVars.join(
-                ", "
-            )}`
+            `The BuildPulse cache is not configured for this job: no ${missing.join(
+                ", no "
+            )}. Caching will be skipped.`
         );
         return false;
     }
@@ -151,12 +182,7 @@ export async function resolvePaths(patterns: string[]): Promise<string[]> {
 }
 
 export function isCacheFeatureAvailable(): boolean {
-    if (validateAwsCredentials()) {
-        return true;
-    }
-
-    logWarning(
-        "S3 caching is not available. Please check your AWS credentials and S3 bucket configuration."
-    );
-    return false;
+    // validateAwsCredentials already says precisely what is missing; a second,
+    // vaguer line on top of it only made the real message harder to find.
+    return validateAwsCredentials();
 }
