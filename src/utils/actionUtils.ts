@@ -117,8 +117,9 @@ export function validateAwsCredentials(): boolean {
     return true;
 }
 
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX enables
- *  shared-bucket tenant isolation (namespace/) with Pod Identity ABAC. */
+/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
+ *  key under a prefix, so one bucket can serve callers that must not see each
+ *  other's entries. */
 export function cacheObjectKey(primaryKey: string, filePath: string): string {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
     const base = `${primaryKey}/${path.basename(filePath)}`;

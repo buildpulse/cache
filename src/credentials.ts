@@ -34,7 +34,7 @@ export const enum CredentialSource {
     InputFile = "aws-credentials-file input",
     EnvFile = "BP_CACHE_AWS_CREDENTIALS_FILE",
     EnvKeys = "BP_CACHE_AWS_ACCESS_KEY_ID",
-    ContainerRole = "container credentials (pod identity / task role)",
+    ContainerRole = "container credentials",
     None = "none"
 }
 
@@ -58,8 +58,7 @@ function input(name: string): string {
 }
 
 /**
- * The container-credential variables the ECS task-role and EKS Pod Identity
- * agents inject. Reading them is not the ambient-credentials problem: they are
+ * The container-credential variables a container platform injects. Reading them is not the ambient-credentials problem: they are
  * set by the platform into the container, they cannot be used to point us at a
  * different principal without also moving the endpoint, and they are the only
  * way the cache authenticates when there is no credentials file.
@@ -171,7 +170,7 @@ function fromIniSource(
  * The region the cache bucket lives in. Distinct from the caller's own
  * `AWS_REGION`, which is read only as a last resort for workflows predating
  * `BP_CACHE_AWS_REGION`; when that is what we end up using, say so, because a
- * customer's region pointing at the wrong endpoint produces a signature error
+ * a region pointing at the wrong endpoint produces a signature error
  * that looks like a credentials problem.
  */
 export function resolveRegion(): { region: string; fromAmbient: boolean } {

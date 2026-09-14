@@ -41,18 +41,18 @@ afterAll(() => {
 });
 
 describe("credential resolution is immune to the ambient AWS environment", () => {
-    // The customer's own credentials, exactly as aws-actions/configure-aws-credentials
+    // A workflow's own credentials, exactly as aws-actions/configure-aws-credentials
     // exports them. Present in every case below.
-    const CUSTOMER = {
-        AWS_ACCESS_KEY_ID: "ASIACUSTOMERKEY",
-        AWS_SECRET_ACCESS_KEY: "customer-secret",
-        AWS_SESSION_TOKEN: "customer-token",
-        AWS_REGION: "eu-central-1"
+    const WORKFLOW_OWN = {
+        AWS_ACCESS_KEY_ID: "ASIAWORKFLOWOWNKEY",
+        AWS_SECRET_ACCESS_KEY: "workflow-own-secret",
+        AWS_SESSION_TOKEN: "workflow-own-token",
+        AWS_REGION: "sa-east-1"
     };
 
-    it("prefers the runner's credentials file over the customer's env keys", () => {
+    it("prefers the runner's credentials file over the workflow's own env keys", () => {
         setEnv({
-            ...CUSTOMER,
+            ...WORKFLOW_OWN,
             BP_CACHE_AWS_CREDENTIALS_FILE:
                 "/opt/buildpulse/aws/cache-credentials",
             BP_CACHE_AWS_PROFILE: "buildpulse-cache"
@@ -63,18 +63,18 @@ describe("credential resolution is immune to the ambient AWS environment", () =>
         expect(r.detail).toContain("buildpulse-cache");
     });
 
-    it("prefers the runner's prefixed keys over the customer's env keys", () => {
+    it("prefers the runner's prefixed keys over the workflow's own env keys", () => {
         setEnv({
-            ...CUSTOMER,
+            ...WORKFLOW_OWN,
             BP_CACHE_AWS_ACCESS_KEY_ID: "AKIARUNNERKEY",
             BP_CACHE_AWS_SECRET_ACCESS_KEY: "runner-secret"
         });
         expect(resolveCredentials().source).toBe(CredentialSource.EnvKeys);
     });
 
-    it("prefers container credentials over the customer's env keys", () => {
+    it("prefers container credentials over the workflow's own env keys", () => {
         setEnv({
-            ...CUSTOMER,
+            ...WORKFLOW_OWN,
             AWS_CONTAINER_CREDENTIALS_FULL_URI:
                 "http://169.254.170.23/v1/credentials"
         });
@@ -83,14 +83,14 @@ describe("credential resolution is immune to the ambient AWS environment", () =>
         );
     });
 
-    it("never uses the customer's env keys, even with nothing else set", () => {
-        setEnv({ ...CUSTOMER });
+    it("never uses the workflow's own env keys, even with nothing else set", () => {
+        setEnv({ ...WORKFLOW_OWN });
         expect(resolveCredentials().source).toBe(CredentialSource.None);
     });
 
     it("lets action inputs win over everything", () => {
         setEnv({
-            ...CUSTOMER,
+            ...WORKFLOW_OWN,
             BP_CACHE_AWS_CREDENTIALS_FILE:
                 "/opt/buildpulse/aws/cache-credentials"
         });
@@ -118,21 +118,21 @@ describe("credential resolution is immune to the ambient AWS environment", () =>
 });
 
 describe("region", () => {
-    it("prefers the cache's own region over the customer's", () => {
+    it("prefers the cache's own region over the workflow's", () => {
         setEnv({
-            AWS_REGION: "eu-central-1",
-            BP_CACHE_AWS_REGION: "us-west-2"
+            AWS_REGION: "sa-east-1",
+            BP_CACHE_AWS_REGION: "ap-south-1"
         });
         expect(resolveRegion()).toEqual({
-            region: "us-west-2",
+            region: "ap-south-1",
             fromAmbient: false
         });
     });
 
     it("falls back to the ambient region and says so", () => {
-        setEnv({ AWS_REGION: "eu-central-1" });
+        setEnv({ AWS_REGION: "sa-east-1" });
         expect(resolveRegion()).toEqual({
-            region: "eu-central-1",
+            region: "sa-east-1",
             fromAmbient: true
         });
     });

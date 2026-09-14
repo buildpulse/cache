@@ -51512,8 +51512,7 @@ function input(name) {
     return core.getInput(name).trim();
 }
 /**
- * The container-credential variables the ECS task-role and EKS Pod Identity
- * agents inject. Reading them is not the ambient-credentials problem: they are
+ * The container-credential variables a container platform injects. Reading them is not the ambient-credentials problem: they are
  * set by the platform into the container, they cannot be used to point us at a
  * different principal without also moving the endpoint, and they are the only
  * way the cache authenticates when there is no credentials file.
@@ -51567,7 +51566,7 @@ function resolveCredentials() {
     }
     if (hasContainerCredentials()) {
         return {
-            source: "container credentials (pod identity / task role)" /* CredentialSource.ContainerRole */,
+            source: "container credentials" /* CredentialSource.ContainerRole */,
             // Required lazily so a job that never reaches this branch does not
             // pay for loading the provider.
             credentials: () => __awaiter(this, void 0, void 0, function* () {
@@ -51600,7 +51599,7 @@ function fromIniSource(source, filepath, profile) {
  * The region the cache bucket lives in. Distinct from the caller's own
  * `AWS_REGION`, which is read only as a last resort for workflows predating
  * `BP_CACHE_AWS_REGION`; when that is what we end up using, say so, because a
- * customer's region pointing at the wrong endpoint produces a signature error
+ * a region pointing at the wrong endpoint produces a signature error
  * that looks like a credentials problem.
  */
 function resolveRegion() {
@@ -52449,8 +52448,9 @@ function validateAwsCredentials() {
     return true;
 }
 exports.validateAwsCredentials = validateAwsCredentials;
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX enables
- *  shared-bucket tenant isolation (namespace/) with Pod Identity ABAC. */
+/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
+ *  key under a prefix, so one bucket can serve callers that must not see each
+ *  other's entries. */
 function cacheObjectKey(primaryKey, filePath) {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
     const base = `${primaryKey}/${path.basename(filePath)}`;
