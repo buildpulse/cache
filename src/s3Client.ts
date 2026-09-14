@@ -16,7 +16,6 @@ import { PassThrough, pipeline, Readable } from "stream";
 import * as tar from "tar";
 import { promisify } from "util";
 import { createGunzip, createGzip } from "zlib";
-import * as zlib from "zlib";
 
 import {
     CredentialSource,
@@ -129,44 +128,25 @@ export function initializeS3Client(): S3Client {
     return s3Client;
 }
 
-async function compressData(
-    filePath: string,
+/**
+ * Pack a cache path into the archive that gets uploaded.
+ *
+ * Files and directories take the same route: a tar of the path's basename,
+ * which restore extracts into the parent directory, putting it back at the
+ * same path. A single file used to be uploaded as its raw bytes, compressed
+ * but not tarred. Restore always extracts a tar, so that object could never
+ * be restored -- extraction failed, nothing was written, the job stayed green
+ * with a warning, and the next save uploaded the same unrestorable object.
+ */
+export async function packCachePath(
+    cachePath: string,
     key: string,
     useZstd: boolean
 ): Promise<string> {
-    const ext = useZstd ? ".zst" : ".gz";
-    const compressedFilePath = path.join(
-        os.tmpdir(),
-        `${path.basename(key)}${ext}`
-    );
-    const fileContent = await fs.promises.readFile(filePath);
-
-    return new Promise((resolve, reject) => {
-        const writeStream = fs.createWriteStream(compressedFilePath);
-
-        if (useZstd) {
-            const proc = spawn("zstd", ["-3", "--stdout"], {
-                stdio: ["pipe", "pipe", "inherit"]
-            });
-            const readStream = Readable.from(fileContent);
-            readStream.pipe(proc.stdin);
-            proc.stdout.pipe(writeStream);
-            writeStream.on("finish", () => resolve(compressedFilePath));
-            writeStream.on("error", reject);
-            proc.on("error", reject);
-        } else {
-            const gzip = zlib.createGzip();
-            const readStream = Readable.from(fileContent);
-            readStream
-                .pipe(gzip)
-                .pipe(writeStream)
-                .on("finish", () => resolve(compressedFilePath))
-                .on("error", reject);
-        }
-    });
+    return createTarArchive(cachePath, key, useZstd);
 }
 
-async function compressDirectory(
+async function createTarArchive(
     dirPath: string,
     key: string,
     useZstd: boolean
@@ -244,8 +224,6 @@ export async function uploadToS3(
         `[S3 Debug] uploadToS3 - Bucket: ${bucketName}, Key: ${key}, FilePath: ${filePath}`
     );
     const client = initializeS3Client();
-    let compressedFilePath: string;
-    let isCompressed = false;
 
     const useZstd = await isZstdAvailable();
     if (useZstd) {
@@ -254,13 +232,7 @@ export async function uploadToS3(
         core.info(`Using gzip for compression (zstd not available)`);
     }
 
-    if (fs.statSync(filePath).isDirectory()) {
-        compressedFilePath = await compressDirectory(filePath, key, useZstd);
-        isCompressed = true;
-    } else {
-        compressedFilePath = await compressData(filePath, key, useZstd);
-        isCompressed = true;
-    }
+    const compressedFilePath = await packCachePath(filePath, key, useZstd);
 
     const fileSize = fs.statSync(compressedFilePath).size;
     const chunkSize = 5 * 1024 * 1024; // 5MB chunk size
@@ -329,9 +301,7 @@ export async function uploadToS3(
     }
 
     core.info(
-        `Successfully uploaded ${
-            isCompressed ? "compressed " : ""
-        }${filePath} to S3 bucket ${bucketName} with key ${key}`
+        `Successfully uploaded compressed ${filePath} to S3 bucket ${bucketName} with key ${key}`
     );
 }
 
@@ -389,63 +359,76 @@ export async function downloadFromS3(
 
         await promisify(pipeline)(Body, writeStream);
 
-        // Detect format from temp file
-        const fd = await fs.promises.open(tempFile, "r");
-        const header = Buffer.alloc(4);
-        await fd.read(header, 0, 4, 0);
-        await fd.close();
-
-        const format = detectCompressionFormat(header);
-        const zstdAvailable = await isZstdAvailable();
-
-        if (format === "zstd" && zstdAvailable) {
-            core.info(`Detected zstd compression, extracting with zstd`);
-
-            await new Promise<void>((resolve, reject) => {
-                const tarProc = spawn(
-                    "tar",
-                    [
-                        "-xf",
-                        tempFile,
-                        "--use-compress-program=zstd",
-                        "-C",
-                        directory || "."
-                    ],
-                    {
-                        stdio: ["inherit", "inherit", "inherit"]
-                    }
-                );
-
-                tarProc.on("close", code => {
-                    if (code === 0) {
-                        resolve();
-                    } else {
-                        reject(new Error(`tar exited with code ${code}`));
-                    }
-                });
-
-                tarProc.on("error", reject);
-            });
-        } else if (format === "gzip" || format === "unknown") {
-            core.info(`Detected gzip compression, extracting with gzip`);
-
-            await promisify(pipeline)(
-                fs.createReadStream(tempFile),
-                createGunzip(),
-                tar.extract({ cwd: directory || "." })
-            );
-        } else {
-            // zstd format but zstd not available
-            throw new Error(
-                `Cache is zstd compressed but zstd is not available on this runner`
-            );
-        }
+        await extractArchive(tempFile, destinationPath);
 
         // Clean up temp file
         fs.unlinkSync(tempFile);
 
         core.info(
             `Successfully downloaded and extracted cache from S3 bucket ${bucketName} with key ${key} to ${destinationPath}`
+        );
+    }
+}
+
+/**
+ * Extract a cache archive into the parent directory of `destinationPath`,
+ * which is where packCachePath archived it from.
+ */
+export async function extractArchive(
+    archivePath: string,
+    destinationPath: string
+): Promise<void> {
+    const directory = path.dirname(destinationPath) || ".";
+
+    // Detect format from the archive's magic bytes
+    const fd = await fs.promises.open(archivePath, "r");
+    const header = Buffer.alloc(4);
+    await fd.read(header, 0, 4, 0);
+    await fd.close();
+
+    const format = detectCompressionFormat(header);
+    const zstdAvailable = await isZstdAvailable();
+
+    if (format === "zstd" && zstdAvailable) {
+        core.info(`Detected zstd compression, extracting with zstd`);
+
+        await new Promise<void>((resolve, reject) => {
+            const tarProc = spawn(
+                "tar",
+                [
+                    "-xf",
+                    archivePath,
+                    "--use-compress-program=zstd",
+                    "-C",
+                    directory || "."
+                ],
+                {
+                    stdio: ["inherit", "inherit", "inherit"]
+                }
+            );
+
+            tarProc.on("close", code => {
+                if (code === 0) {
+                    resolve();
+                } else {
+                    reject(new Error(`tar exited with code ${code}`));
+                }
+            });
+
+            tarProc.on("error", reject);
+        });
+    } else if (format === "gzip" || format === "unknown") {
+        core.info(`Detected gzip compression, extracting with gzip`);
+
+        await promisify(pipeline)(
+            fs.createReadStream(archivePath),
+            createGunzip(),
+            tar.extract({ cwd: directory || "." })
+        );
+    } else {
+        // zstd format but zstd not available
+        throw new Error(
+            `Cache is zstd compressed but zstd is not available on this runner`
         );
     }
 }
