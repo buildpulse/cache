@@ -51285,6 +51285,132 @@ try {
 
 /***/ }),
 
+/***/ 162:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resetReportState = exports.report = exports.describe = exports.classify = void 0;
+const core = __importStar(__nccwpck_require__(2186));
+const AUTH_NAMES = new Set([
+    "AccessDenied",
+    "AccessDeniedException",
+    "CredentialsProviderError",
+    "ExpiredToken",
+    "ExpiredTokenException",
+    "InvalidAccessKeyId",
+    "InvalidClientTokenId",
+    "InvalidToken",
+    "SignatureDoesNotMatch",
+    "UnrecognizedClientException",
+    "Forbidden"
+]);
+const MISS_NAMES = new Set(["NoSuchKey", "NotFound", "NoSuchBucket"]);
+function classify(error) {
+    var _a;
+    const e = (error || {});
+    const name = e.name || e.Code || "";
+    if (AUTH_NAMES.has(name)) {
+        return "auth" /* CacheFailure.Auth */;
+    }
+    if (MISS_NAMES.has(name)) {
+        return "miss" /* CacheFailure.Miss */;
+    }
+    const status = (_a = e.$metadata) === null || _a === void 0 ? void 0 : _a.httpStatusCode;
+    if (status === 401 || status === 403) {
+        return "auth" /* CacheFailure.Auth */;
+    }
+    if (status === 404) {
+        return "miss" /* CacheFailure.Miss */;
+    }
+    // A bare Error whose message was built by stringifying an SDK error still
+    // carries the name. Cheap to check, and it covers the rethrow sites that
+    // predate this module.
+    const message = e.message || "";
+    for (const n of AUTH_NAMES) {
+        if (message.includes(n)) {
+            return "auth" /* CacheFailure.Auth */;
+        }
+    }
+    return "other" /* CacheFailure.Other */;
+}
+exports.classify = classify;
+function describe(error) {
+    const e = (error || {});
+    const name = e.name || e.Code;
+    const message = e.message || String(error);
+    return name && !message.startsWith(name) ? `${name}: ${message}` : message;
+}
+exports.describe = describe;
+let authReported = false;
+/**
+ * Report a failure at the volume it deserves, once.
+ *
+ * An auth failure repeats per restore key and per cache path, so the first one
+ * is an annotation and the rest are plain lines; without that a four-key
+ * restore posts four identical red annotations.
+ */
+function report(phase, error, context) {
+    const kind = classify(error);
+    const detail = describe(error);
+    if (kind === "auth" /* CacheFailure.Auth */) {
+        if (!authReported) {
+            authReported = true;
+            core.error(`BuildPulse cache ${phase} was denied: ${detail}. ` +
+                `Credentials came from ${context.credentialSource}. ` +
+                (context.keyPrefixSet
+                    ? ""
+                    : "BP_CACHE_KEY_PREFIX is not set, which by itself causes a denial. ") +
+                "The cache is not working for this job; it is not a cache miss.");
+            core.setOutput("cache-error", kind);
+        }
+        else {
+            core.info(`BuildPulse cache ${phase} denied again: ${detail}`);
+        }
+        return kind;
+    }
+    if (kind === "other" /* CacheFailure.Other */) {
+        core.warning(`BuildPulse cache ${phase} failed: ${detail}`);
+        core.setOutput("cache-error", kind);
+        return kind;
+    }
+    core.info(`BuildPulse cache ${phase}: ${detail}`);
+    return kind;
+}
+exports.report = report;
+/** Test seam: the once-only annotation is module state. */
+function resetReportState() {
+    authReported = false;
+}
+exports.resetReportState = resetReportState;
+
+
+/***/ }),
+
 /***/ 9042:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -51300,13 +51426,27 @@ var Inputs;
     Inputs["UploadChunkSize"] = "upload-chunk-size";
     Inputs["EnableCrossOsArchive"] = "enableCrossOsArchive";
     Inputs["FailOnCacheMiss"] = "fail-on-cache-miss";
-    Inputs["LookupOnly"] = "lookup-only"; // Input for cache, restore action
+    Inputs["LookupOnly"] = "lookup-only";
+    // Credentials for the cache's S3 backend. Every one of these is optional:
+    // when the runner supplies credentials the action finds them on its own,
+    // and these exist for the cases it cannot -- a self-hosted setup, a
+    // different account, or a workflow that needs to be explicit because its
+    // own AWS configuration would otherwise be ambiguous. See src/credentials.ts
+    // for the resolution order.
+    Inputs["AwsAccessKeyId"] = "aws-access-key-id";
+    Inputs["AwsSecretAccessKey"] = "aws-secret-access-key";
+    Inputs["AwsSessionToken"] = "aws-session-token";
+    Inputs["AwsCredentialsFile"] = "aws-credentials-file";
+    Inputs["AwsProfile"] = "aws-profile";
+    Inputs["AwsRegion"] = "aws-region";
+    Inputs["OnCacheError"] = "on-cache-error"; // Input for cache, restore, save action
 })(Inputs = exports.Inputs || (exports.Inputs = {}));
 var Outputs;
 (function (Outputs) {
     Outputs["CacheHit"] = "cache-hit";
     Outputs["CachePrimaryKey"] = "cache-primary-key";
-    Outputs["CacheMatchedKey"] = "cache-matched-key"; // Output from restore action
+    Outputs["CacheMatchedKey"] = "cache-matched-key";
+    Outputs["CacheError"] = "cache-error"; // Output from cache, restore, save action
 })(Outputs = exports.Outputs || (exports.Outputs = {}));
 var State;
 (function (State) {
@@ -51320,6 +51460,156 @@ var Events;
     Events["PullRequest"] = "pull_request";
 })(Events = exports.Events || (exports.Events = {}));
 exports.RefKey = "GITHUB_REF";
+
+
+/***/ }),
+
+/***/ 8138:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resolveRegion = exports.resolveCredentials = void 0;
+const core = __importStar(__nccwpck_require__(2186));
+const constants_1 = __nccwpck_require__(9042);
+function env(name) {
+    return (process.env[name] || "").trim();
+}
+function input(name) {
+    return core.getInput(name).trim();
+}
+/**
+ * The container-credential variables a container platform injects. Reading them is not the ambient-credentials problem: they are
+ * set by the platform into the container, they cannot be used to point us at a
+ * different principal without also moving the endpoint, and they are the only
+ * way the cache authenticates when there is no credentials file.
+ */
+function hasContainerCredentials() {
+    return !!(env("AWS_CONTAINER_CREDENTIALS_FULL_URI") ||
+        env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"));
+}
+function resolveCredentials() {
+    const inputKeyId = input(constants_1.Inputs.AwsAccessKeyId);
+    const inputSecret = input(constants_1.Inputs.AwsSecretAccessKey);
+    if (inputKeyId && inputSecret) {
+        return {
+            source: "action inputs" /* CredentialSource.Inputs */,
+            credentials: () => __awaiter(this, void 0, void 0, function* () {
+                return ({
+                    accessKeyId: inputKeyId,
+                    secretAccessKey: inputSecret,
+                    // Carried deliberately. Omitting it is what made temporary
+                    // credentials unusable before: they sign, and S3 rejects the
+                    // signature with an error that names the key, not the token.
+                    sessionToken: input(constants_1.Inputs.AwsSessionToken) || undefined
+                });
+            })
+        };
+    }
+    if (inputKeyId || inputSecret) {
+        throw new Error("aws-access-key-id and aws-secret-access-key must be set together");
+    }
+    const inputFile = input(constants_1.Inputs.AwsCredentialsFile);
+    if (inputFile) {
+        return fromIniSource("aws-credentials-file input" /* CredentialSource.InputFile */, inputFile, input(constants_1.Inputs.AwsProfile) || undefined);
+    }
+    const envFile = env("BP_CACHE_AWS_CREDENTIALS_FILE");
+    if (envFile) {
+        return fromIniSource("BP_CACHE_AWS_CREDENTIALS_FILE" /* CredentialSource.EnvFile */, envFile, input(constants_1.Inputs.AwsProfile) || env("BP_CACHE_AWS_PROFILE") || undefined);
+    }
+    const envKeyId = env("BP_CACHE_AWS_ACCESS_KEY_ID");
+    const envSecret = env("BP_CACHE_AWS_SECRET_ACCESS_KEY");
+    if (envKeyId && envSecret) {
+        return {
+            source: "BP_CACHE_AWS_ACCESS_KEY_ID" /* CredentialSource.EnvKeys */,
+            credentials: () => __awaiter(this, void 0, void 0, function* () {
+                return ({
+                    accessKeyId: envKeyId,
+                    secretAccessKey: envSecret,
+                    sessionToken: env("BP_CACHE_AWS_SESSION_TOKEN") || undefined
+                });
+            })
+        };
+    }
+    if (hasContainerCredentials()) {
+        return {
+            source: "container credentials" /* CredentialSource.ContainerRole */,
+            // Required lazily so a job that never reaches this branch does not
+            // pay for loading the provider.
+            credentials: () => __awaiter(this, void 0, void 0, function* () {
+                if (env("AWS_CONTAINER_CREDENTIALS_FULL_URI")) {
+                    const { fromHttp } = yield Promise.resolve().then(() => __importStar(__nccwpck_require__(7290)));
+                    return fromHttp({})();
+                }
+                const { fromContainerMetadata } = yield Promise.resolve().then(() => __importStar(__nccwpck_require__(7477)));
+                return fromContainerMetadata({})();
+            })
+        };
+    }
+    return { source: "none" /* CredentialSource.None */ };
+}
+exports.resolveCredentials = resolveCredentials;
+function fromIniSource(source, filepath, profile) {
+    return {
+        source,
+        detail: profile ? `${filepath} (profile ${profile})` : filepath,
+        credentials: () => __awaiter(this, void 0, void 0, function* () {
+            const { fromIni } = yield Promise.resolve().then(() => __importStar(__nccwpck_require__(4203)));
+            // `filepath` is absolute and passed explicitly, so neither HOME nor
+            // AWS_SHARED_CREDENTIALS_FILE takes part in locating it. `profile`
+            // likewise beats AWS_PROFILE.
+            return fromIni({ filepath, profile, ignoreCache: true })();
+        })
+    };
+}
+/**
+ * The region the cache bucket lives in. Distinct from the caller's own
+ * `AWS_REGION`, which is read only as a last resort for workflows predating
+ * `BP_CACHE_AWS_REGION`; when that is what we end up using, say so, because a
+ * a region pointing at the wrong endpoint produces a signature error
+ * that looks like a credentials problem.
+ */
+function resolveRegion() {
+    const explicit = input(constants_1.Inputs.AwsRegion) || env("BP_CACHE_AWS_REGION");
+    if (explicit) {
+        return { region: explicit, fromAmbient: false };
+    }
+    return { region: env("AWS_REGION"), fromAmbient: true };
+}
+exports.resolveRegion = resolveRegion;
 
 
 /***/ }),
@@ -51365,6 +51655,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.restoreRun = exports.restoreOnlyRun = exports.restoreImpl = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const client_s3_1 = __nccwpck_require__(9250);
+const cacheErrors_1 = __nccwpck_require__(162);
 const constants_1 = __nccwpck_require__(9042);
 const s3Client_1 = __nccwpck_require__(5791);
 const stateProvider_1 = __nccwpck_require__(1527);
@@ -51372,6 +51663,9 @@ const utils = __importStar(__nccwpck_require__(6850));
 function restoreImpl(stateProvider, earlyExit) {
     return __awaiter(this, void 0, void 0, function* () {
         let cacheKey;
+        // Anything worse than a plain miss, remembered so the end of the run can
+        // fail the step when the caller asked for that.
+        let failure;
         try {
             if (!utils.isCacheFeatureAvailable()) {
                 core.setOutput(constants_1.Outputs.CacheHit, "false");
@@ -51385,7 +51679,9 @@ function restoreImpl(stateProvider, earlyExit) {
             const primaryKey = stateProvider.getState(constants_1.State.CachePrimaryKey) ||
                 core.getInput(constants_1.Inputs.Key);
             stateProvider.setState(constants_1.State.CachePrimaryKey, primaryKey);
-            const restoreKeys = utils.getInputAsArray(constants_1.Inputs.RestoreKeys).slice(1);
+            // No slice. An earlier version dropped the first entry here, which
+            // silently discarded the user's highest-priority fallback key.
+            const restoreKeys = utils.getInputAsArray(constants_1.Inputs.RestoreKeys);
             const cachePathPatterns = utils.getInputAsArray(constants_1.Inputs.Path, {
                 required: true
             });
@@ -51440,8 +51736,18 @@ function restoreImpl(stateProvider, earlyExit) {
                     }
                 }
                 catch (error) {
-                    core.info(`Failed to restore cache from key ${s3Key}: ${error.message}`);
+                    const kind = (0, cacheErrors_1.report)("restore", error, {
+                        credentialSource: (0, s3Client_1.resolvedCredentialSource)(),
+                        keyPrefixSet: !!process.env.BP_CACHE_KEY_PREFIX
+                    });
+                    if (kind !== "miss" /* CacheFailure.Miss */) {
+                        failure = kind;
+                    }
+                    core.info(`No cache restored from ${s3Key}`);
                 }
+            }
+            if (failure && utils.failOnCacheError()) {
+                throw new Error(`Cache ${failure} error and on-cache-error is set to error.`);
             }
             const isExactKeyMatch = cacheKey === utils.cacheObjectKey(primaryKey, effectivePaths[0]);
             core.setOutput(constants_1.Outputs.CacheHit, isExactKeyMatch.toString());
@@ -51539,7 +51845,7 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.downloadFromS3 = exports.uploadToS3 = exports.initializeS3Client = exports.s3Client = void 0;
+exports.downloadFromS3 = exports.uploadToS3 = exports.initializeS3Client = exports.resolvedCredentialSource = exports.s3Client = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const client_s3_1 = __nccwpck_require__(9250);
 const child_process_1 = __nccwpck_require__(2081);
@@ -51551,6 +51857,7 @@ const tar = __importStar(__nccwpck_require__(4674));
 const util_1 = __nccwpck_require__(3837);
 const zlib_1 = __nccwpck_require__(9796);
 const zlib = __importStar(__nccwpck_require__(9796));
+const credentials_1 = __nccwpck_require__(8138);
 // Check if zstd is available on the system
 function isZstdAvailable() {
     return __awaiter(this, void 0, void 0, function* () {
@@ -51587,37 +51894,43 @@ function createZstdCompressStream(level = 3) {
     stream.readable = passThrough;
     return stream;
 }
+/**
+ * Where this client's credentials came from, for the log line and for the
+ * error message when a request is denied. Set by initializeS3Client.
+ */
+let credentialSource = "none" /* CredentialSource.None */;
+function resolvedCredentialSource() {
+    return credentialSource;
+}
+exports.resolvedCredentialSource = resolvedCredentialSource;
 function initializeS3Client() {
     if (exports.s3Client) {
         return exports.s3Client;
     }
-    const accessKeyId = process.env.BP_CACHE_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.BP_CACHE_AWS_SECRET_ACCESS_KEY ||
-        process.env.AWS_SECRET_ACCESS_KEY;
-    const region = process.env.BP_CACHE_AWS_REGION || process.env.AWS_REGION;
+    const { region, fromAmbient } = (0, credentials_1.resolveRegion)();
     if (!region) {
-        throw new Error("AWS region not provided (set BP_CACHE_AWS_REGION or AWS_REGION)");
+        throw new Error("No region for the cache bucket. Set the aws-region input or the " +
+            "BP_CACHE_AWS_REGION environment variable.");
     }
-    core.info(`[S3] Region: ${region}`);
-    core.info(`[S3] Bucket: ${process.env.BP_CACHE_S3_BUCKET}`);
+    const resolved = (0, credentials_1.resolveCredentials)();
+    credentialSource = resolved.source;
+    if (!resolved.credentials) {
+        throw new Error("No credentials for the cache bucket. On a BuildPulse runner these " +
+            "are provided automatically; if you are running elsewhere, set " +
+            "the aws-access-key-id and aws-secret-access-key inputs, or " +
+            "aws-credentials-file.");
+    }
+    core.info(`[cache] region ${region}${fromAmbient ? " (from AWS_REGION; prefer BP_CACHE_AWS_REGION)" : ""}`);
+    core.info(`[cache] bucket ${process.env.BP_CACHE_S3_BUCKET || "(unset)"}`);
+    core.info(`[cache] credentials from ${resolved.source}${resolved.detail ? ` -- ${resolved.detail}` : ""}`);
     if (process.env.BP_CACHE_KEY_PREFIX) {
-        core.info(`[S3] Key prefix: ${process.env.BP_CACHE_KEY_PREFIX}`);
+        core.info(`[cache] key prefix ${process.env.BP_CACHE_KEY_PREFIX}`);
     }
-    // Only pass explicit credentials when both are set. Otherwise fall through to
-    // the SDK default provider chain (EKS Pod Identity / IRSA / instance role).
-    // Passing credentials: undefined still overrides the chain in some SDK paths —
-    // omit the field entirely when using Pod Identity.
-    const clientConfig = {
-        region
-    };
-    if (accessKeyId && secretAccessKey) {
-        core.info("[S3] Using static access keys from env");
-        clientConfig.credentials = { accessKeyId, secretAccessKey };
-    }
-    else {
-        core.info("[S3] Using default AWS credential provider chain");
-    }
-    exports.s3Client = new client_s3_1.S3Client(clientConfig);
+    // The provider is always explicit. Handing the SDK a config with no
+    // `credentials` would fall back to its default chain, whose first link is
+    // the ambient AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY pair -- the exact
+    // hijack this resolution exists to prevent.
+    exports.s3Client = new client_s3_1.S3Client({ region, credentials: resolved.credentials });
     return exports.s3Client;
 }
 exports.initializeS3Client = initializeS3Client;
@@ -51829,7 +52142,12 @@ function downloadFromS3(bucketName, key, destinationPath) {
             Bucket: bucketName,
             Key: key
         });
-        try {
+        // No try/catch here. It used to wrap the whole body and rethrow a bare
+        // Error built by stringifying the SDK's, which discarded `name` and
+        // `$metadata` -- the only things that tell "nothing is cached under this
+        // key" apart from "we are not allowed to read it". The error now reaches
+        // the caller intact.
+        {
             const { Body } = yield client.send(command);
             if (!(Body instanceof stream_1.Readable)) {
                 throw new Error("Invalid response body from S3");
@@ -51883,9 +52201,6 @@ function downloadFromS3(bucketName, key, destinationPath) {
             // Clean up temp file
             fs.unlinkSync(tempFile);
             core.info(`Successfully downloaded and extracted cache from S3 bucket ${bucketName} with key ${key} to ${destinationPath}`);
-        }
-        catch (error) {
-            throw new Error(`Failed to download file from S3: ${error}`);
         }
     });
 }
@@ -52036,12 +52351,13 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.isCacheFeatureAvailable = exports.resolvePaths = exports.effectiveCachePaths = exports.expandHome = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
+exports.isCacheFeatureAvailable = exports.resolvePaths = exports.effectiveCachePaths = exports.expandHome = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
 const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
 const constants_1 = __nccwpck_require__(9042);
+const credentials_1 = __nccwpck_require__(8138);
 function isGhes() {
     const ghUrl = new URL(process.env["GITHUB_SERVER_URL"] || "https://github.com");
     return ghUrl.hostname.toUpperCase() !== "GITHUB.COM";
@@ -52054,11 +52370,25 @@ function isExactKeyMatch(key, cacheKey) {
         }) === 0);
 }
 exports.isExactKeyMatch = isExactKeyMatch;
+/**
+ * A real warning. This used to be `core.info` with a literal "[warning]"
+ * prefix, which produces no workflow command, so nothing it reported appeared
+ * as an annotation, in the job summary, or in the Checks API -- every caller
+ * believed it was warning and none of it was visible.
+ */
 function logWarning(message) {
-    const warningPrefix = "[warning]";
-    core.info(`${warningPrefix}${message}`);
+    core.warning(message);
 }
 exports.logWarning = logWarning;
+/**
+ * Whether a cache failure that is not a plain miss should fail the step.
+ * Default is to keep the job green, because a cache is an optimisation; a
+ * workflow that would rather know can set on-cache-error: error.
+ */
+function failOnCacheError() {
+    return core.getInput(constants_1.Inputs.OnCacheError).trim().toLowerCase() === "error";
+}
+exports.failOnCacheError = failOnCacheError;
 // Cache token authorized for all events that are tied to a ref
 // See GitHub Context https://help.github.com/actions/automating-your-workflow-with-github-actions/contexts-and-expression-syntax-for-github-actions#github-context
 function isValidEvent() {
@@ -52086,26 +52416,37 @@ function getInputAsBool(name, options) {
     return result.toLowerCase() === "true";
 }
 exports.getInputAsBool = getInputAsBool;
+/**
+ * Whether this job is configured to use the cache at all.
+ *
+ * "Not configured" is a different thing from "configured and failing", and the
+ * two must not share a message: the first is normal on a runner without the
+ * cache, the second is a defect. This only answers the first question --
+ * whether a bucket, a region and some credential source are present. Whether
+ * those credentials actually work is answered later, loudly, by cacheErrors.
+ */
 function validateAwsCredentials() {
-    // Bucket + region are always required. Static access keys are optional —
-    // when absent, buildpulse/cache@v6 uses the SDK default provider chain
-    // (EKS Pod Identity).
-    const requiredVars = [
-        ["BP_CACHE_AWS_REGION", "AWS_REGION"],
-        ["BP_CACHE_S3_BUCKET"]
-    ];
-    const missingEnvVars = requiredVars
-        .filter(vars => !vars.some(v => process.env[v]))
-        .map(vars => vars[0]);
-    if (missingEnvVars.length > 0) {
-        logWarning(`Missing required AWS environment variables: ${missingEnvVars.join(", ")}`);
+    const missing = [];
+    if (!process.env.BP_CACHE_S3_BUCKET) {
+        missing.push("a bucket (BP_CACHE_S3_BUCKET)");
+    }
+    if (!(0, credentials_1.resolveRegion)().region) {
+        missing.push("a region (aws-region input or BP_CACHE_AWS_REGION)");
+    }
+    if ((0, credentials_1.resolveCredentials)().source === "none" /* CredentialSource.None */) {
+        missing.push("credentials (aws-access-key-id/aws-secret-access-key or " +
+            "aws-credentials-file inputs, or BP_CACHE_AWS_CREDENTIALS_FILE)");
+    }
+    if (missing.length > 0) {
+        logWarning(`The BuildPulse cache is not configured for this job: no ${missing.join(", no ")}. Caching will be skipped.`);
         return false;
     }
     return true;
 }
 exports.validateAwsCredentials = validateAwsCredentials;
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX enables
- *  shared-bucket tenant isolation (namespace/) with Pod Identity ABAC. */
+/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
+ *  key under a prefix, so one bucket can serve callers that must not see each
+ *  other's entries. */
 function cacheObjectKey(primaryKey, filePath) {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
     const base = `${primaryKey}/${path.basename(filePath)}`;
@@ -52184,11 +52525,9 @@ function resolvePaths(patterns) {
 }
 exports.resolvePaths = resolvePaths;
 function isCacheFeatureAvailable() {
-    if (validateAwsCredentials()) {
-        return true;
-    }
-    logWarning("S3 caching is not available. Please check your AWS credentials and S3 bucket configuration.");
-    return false;
+    // validateAwsCredentials already says precisely what is missing; a second,
+    // vaguer line on top of it only made the real message harder to find.
+    return validateAwsCredentials();
 }
 exports.isCacheFeatureAvailable = isCacheFeatureAvailable;
 

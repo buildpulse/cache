@@ -18,6 +18,12 @@ import { promisify } from "util";
 import { createGunzip, createGzip } from "zlib";
 import * as zlib from "zlib";
 
+import {
+    CredentialSource,
+    resolveCredentials,
+    resolveRegion
+} from "./credentials";
+
 export let s3Client: S3Client;
 
 // Check if zstd is available on the system
@@ -65,45 +71,60 @@ function createZstdCompressStream(level = 3): NodeJS.ReadWriteStream {
     return stream as any;
 }
 
+/**
+ * Where this client's credentials came from, for the log line and for the
+ * error message when a request is denied. Set by initializeS3Client.
+ */
+let credentialSource: string = CredentialSource.None;
+
+export function resolvedCredentialSource(): string {
+    return credentialSource;
+}
+
 export function initializeS3Client(): S3Client {
     if (s3Client) {
         return s3Client;
     }
 
-    const accessKeyId =
-        process.env.BP_CACHE_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
-    const secretAccessKey =
-        process.env.BP_CACHE_AWS_SECRET_ACCESS_KEY ||
-        process.env.AWS_SECRET_ACCESS_KEY;
-    const region = process.env.BP_CACHE_AWS_REGION || process.env.AWS_REGION;
-
+    const { region, fromAmbient } = resolveRegion();
     if (!region) {
         throw new Error(
-            "AWS region not provided (set BP_CACHE_AWS_REGION or AWS_REGION)"
+            "No region for the cache bucket. Set the aws-region input or the " +
+                "BP_CACHE_AWS_REGION environment variable."
         );
     }
 
-    core.info(`[S3] Region: ${region}`);
-    core.info(`[S3] Bucket: ${process.env.BP_CACHE_S3_BUCKET}`);
+    const resolved = resolveCredentials();
+    credentialSource = resolved.source;
+    if (!resolved.credentials) {
+        throw new Error(
+            "No credentials for the cache bucket. On a BuildPulse runner these " +
+                "are provided automatically; if you are running elsewhere, set " +
+                "the aws-access-key-id and aws-secret-access-key inputs, or " +
+                "aws-credentials-file."
+        );
+    }
+
+    core.info(
+        `[cache] region ${region}${
+            fromAmbient ? " (from AWS_REGION; prefer BP_CACHE_AWS_REGION)" : ""
+        }`
+    );
+    core.info(`[cache] bucket ${process.env.BP_CACHE_S3_BUCKET || "(unset)"}`);
+    core.info(
+        `[cache] credentials from ${resolved.source}${
+            resolved.detail ? ` -- ${resolved.detail}` : ""
+        }`
+    );
     if (process.env.BP_CACHE_KEY_PREFIX) {
-        core.info(`[S3] Key prefix: ${process.env.BP_CACHE_KEY_PREFIX}`);
+        core.info(`[cache] key prefix ${process.env.BP_CACHE_KEY_PREFIX}`);
     }
 
-    // Only pass explicit credentials when both are set. Otherwise fall through to
-    // the SDK default provider chain (EKS Pod Identity / IRSA / instance role).
-    // Passing credentials: undefined still overrides the chain in some SDK paths —
-    // omit the field entirely when using Pod Identity.
-    const clientConfig: ConstructorParameters<typeof S3Client>[0] = {
-        region
-    };
-    if (accessKeyId && secretAccessKey) {
-        core.info("[S3] Using static access keys from env");
-        clientConfig.credentials = { accessKeyId, secretAccessKey };
-    } else {
-        core.info("[S3] Using default AWS credential provider chain");
-    }
-
-    s3Client = new S3Client(clientConfig);
+    // The provider is always explicit. Handing the SDK a config with no
+    // `credentials` would fall back to its default chain, whose first link is
+    // the ambient AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY pair -- the exact
+    // hijack this resolution exists to prevent.
+    s3Client = new S3Client({ region, credentials: resolved.credentials });
 
     return s3Client;
 }
@@ -345,7 +366,12 @@ export async function downloadFromS3(
         Key: key
     });
 
-    try {
+    // No try/catch here. It used to wrap the whole body and rethrow a bare
+    // Error built by stringifying the SDK's, which discarded `name` and
+    // `$metadata` -- the only things that tell "nothing is cached under this
+    // key" apart from "we are not allowed to read it". The error now reaches
+    // the caller intact.
+    {
         const { Body } = await client.send(command);
 
         if (!(Body instanceof Readable)) {
@@ -421,8 +447,6 @@ export async function downloadFromS3(
         core.info(
             `Successfully downloaded and extracted cache from S3 bucket ${bucketName} with key ${key} to ${destinationPath}`
         );
-    } catch (error) {
-        throw new Error(`Failed to download file from S3: ${error}`);
     }
 }
 

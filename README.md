@@ -14,6 +14,18 @@ See ["Caching dependencies to speed up workflows"](https://docs.github.com/en/ac
 
 ## What's New
 
+### v7
+
+* The plain `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables are no longer read as the cache's credentials. See [Credentials](#credentials).
+* New `aws-access-key-id`, `aws-secret-access-key`, `aws-session-token`, `aws-credentials-file`, `aws-profile` and `aws-region` inputs.
+* A cache that cannot authenticate is reported as an error, not as a cache miss. New `cache-error` output and `on-cache-error` input.
+* Fixed `restore-keys` dropping its first entry.
+
+### v6
+
+* Credentials may come from the platform rather than from static keys.
+* Optional `BP_CACHE_KEY_PREFIX` is prepended to every cache object key.
+
 ### v4
 
 * Updated to node 20
@@ -95,7 +107,7 @@ jobs:
 
     - name: Cache Primes
       id: cache-primes
-      uses: buildpulse/cache@v4
+      uses: buildpulse/cache@v7
       with:
         path: prime-numbers
         key: ${{ runner.os }}-primes
@@ -126,7 +138,7 @@ jobs:
 
     - name: Restore cached Primes
       id: cache-primes-restore
-      uses: buildpulse/cache/restore@v4
+      uses: buildpulse/cache/restore@v7
       with:
         path: |
           path/to/dependencies
@@ -137,7 +149,7 @@ jobs:
     .
     - name: Save Primes
       id: cache-primes-save
-      uses: buildpulse/cache/save@v4
+      uses: buildpulse/cache/save@v7
       with:
         path: |
           path/to/dependencies
@@ -147,6 +159,47 @@ jobs:
 
 > **Note**
 > You must use the `cache` or `restore` action in your workflow before you need to use the files that might be restored from the cache. If the provided `key` matches an existing cache, a new cache is not created and if the provided `key` doesn't match an existing cache, a new cache is automatically created provided the job completes successfully.
+
+## Credentials
+
+The cache stores its entries in S3. On a BuildPulse runner the credentials are supplied for you and there is nothing to configure — the examples above are complete.
+
+The action resolves credentials in this order, and the first source that is configured is the one it uses. A source that is configured but then fails to authenticate is an error; the action does not quietly try the next one.
+
+1. The `aws-access-key-id` / `aws-secret-access-key` inputs (with `aws-session-token` if they are temporary).
+2. The `aws-credentials-file` input, with `aws-profile`.
+3. `BP_CACHE_AWS_CREDENTIALS_FILE` and `BP_CACHE_AWS_PROFILE`, which is how a runner supplies a credentials file.
+4. `BP_CACHE_AWS_ACCESS_KEY_ID`, `BP_CACHE_AWS_SECRET_ACCESS_KEY` and `BP_CACHE_AWS_SESSION_TOKEN`.
+5. Container credentials, when the platform provides them.
+
+**The plain `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` variables are deliberately not consulted.** Before v7 they were, ahead of everything else, so a job that ran `aws-actions/configure-aws-credentials` for its own work had those credentials used against the cache bucket, where they do not belong. If you want the cache to use credentials you control, pass them as inputs:
+
+```yaml
+- uses: buildpulse/cache@v7
+  with:
+    path: node_modules
+    key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+    aws-access-key-id: ${{ secrets.CACHE_AWS_ACCESS_KEY_ID }}
+    aws-secret-access-key: ${{ secrets.CACHE_AWS_SECRET_ACCESS_KEY }}
+```
+
+A credentials file is read from the absolute path you give, so it does not depend on `HOME`. Setting `HOME` in a job used to make the credentials unreachable and the cache silently stopped working.
+
+### When the cache does not work
+
+A cache miss is normal and is reported as an info line. A cache that is configured but cannot be reached is different, and is reported as an error annotation naming which credential source was used. The `cache-error` output is set to `auth` or `other` in that case, and is empty when the cache worked, a miss included.
+
+By default the job still succeeds without a cache. To treat a broken cache as a failure:
+
+```yaml
+- uses: buildpulse/cache@v7
+  with:
+    path: node_modules
+    key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+    on-cache-error: error
+```
+
+`on-cache-error` is about the cache being unusable. For failing on a genuine miss, use `fail-on-cache-miss`.
 
 ## Caching Strategies
 
@@ -191,7 +244,7 @@ A cache key can include any of the contexts, functions, literals, and operators 
 For example, using the [`hashFiles`](https://docs.github.com/en/actions/learn-github-actions/expressions#hashfiles) function allows you to create a new cache when dependencies change.
 
 ```yaml
-  - uses: buildpulse/cache@v4
+  - uses: buildpulse/cache@v7
     with:
       path: |
         path/to/dependencies
@@ -209,7 +262,7 @@ Additionally, you can use arbitrary command output in a cache key, such as a dat
       echo "date=$(/bin/date -u "+%Y%m%d")" >> $GITHUB_OUTPUT
     shell: bash
 
-  - uses: buildpulse/cache@v4
+  - uses: buildpulse/cache@v7
     with:
       path: path/to/dependencies
       key: ${{ runner.os }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('**/lockfiles') }}
@@ -231,7 +284,7 @@ Example:
 steps:
   - uses: actions/checkout@v4
 
-  - uses: buildpulse/cache@v4
+  - uses: buildpulse/cache@v7
     id: cache
     with:
       path: path/to/dependencies
@@ -263,7 +316,7 @@ jobs:
 
       - name: Cache Primes
         id: cache-primes
-        uses: buildpulse/cache@v4
+        uses: buildpulse/cache@v7
         with:
           path: prime-numbers
           key: primes
@@ -274,7 +327,7 @@ jobs:
 
       - name: Cache Numbers
         id: cache-numbers
-        uses: buildpulse/cache@v4
+        uses: buildpulse/cache@v7
         with:
           path: numbers
           key: primes
@@ -290,7 +343,7 @@ jobs:
 
       - name: Cache Primes
         id: cache-primes
-        uses: buildpulse/cache@v4
+        uses: buildpulse/cache@v7
         with:
           path: prime-numbers
           key: primes

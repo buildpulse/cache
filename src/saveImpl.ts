@@ -1,8 +1,13 @@
 import * as core from "@actions/core";
 import * as path from "path";
 
+import { CacheFailure, report } from "./cacheErrors";
 import { Events, Inputs, State } from "./constants";
-import { initializeS3Client, uploadToS3 } from "./s3Client";
+import {
+    initializeS3Client,
+    resolvedCredentialSource,
+    uploadToS3
+} from "./s3Client";
 import {
     IStateProvider,
     NullStateProvider,
@@ -10,15 +15,24 @@ import {
 } from "./stateProvider";
 import * as utils from "./utils/actionUtils";
 
-// Catch and log any unhandled exceptions.  These exceptions can leak out of the uploadChunk method in
-// @actions/toolkit when a failed upload closes the file descriptor causing any in-process reads to
-// throw an uncaught exception.  Instead of failing this action, just warn.
-process.on("uncaughtException", e => utils.logWarning(e.message));
+// Catch and log any unhandled exceptions. These can leak out of an upload when
+// a failed request closes the file descriptor and an in-process read then
+// throws. Reported at the volume the failure deserves rather than swallowed:
+// this handler used to route a credential error to an invisible info line.
+process.on("uncaughtException", e =>
+    report("save", e, {
+        credentialSource: resolvedCredentialSource(),
+        keyPrefixSet: !!process.env.BP_CACHE_KEY_PREFIX
+    })
+);
 
 export async function saveImpl(
     stateProvider: IStateProvider
 ): Promise<string | void> {
     let cacheKey: string | undefined;
+    // Anything worse than a plain miss, so the end of the run can fail the step
+    // when the caller asked for that.
+    let failure: CacheFailure | undefined;
     try {
         if (!utils.isCacheFeatureAvailable()) {
             return;
@@ -90,18 +104,26 @@ export async function saveImpl(
                     cacheKey = s3Key;
                 }
             } catch (error) {
-                utils.logWarning(
-                    `Failed to upload ${cachePath} to S3: ${
-                        (error as Error).message
-                    }`
-                );
+                const kind = report("save", error, {
+                    credentialSource: resolvedCredentialSource(),
+                    keyPrefixSet: !!process.env.BP_CACHE_KEY_PREFIX
+                });
+                if (kind !== CacheFailure.Miss) {
+                    failure = kind;
+                }
             }
         }
 
         if (cacheKey) {
             core.info(`Cache saved with key: ${cacheKey}`);
-        } else {
+        } else if (!failure) {
             core.warning("Failed to save cache to S3");
+        }
+
+        if (failure && utils.failOnCacheError()) {
+            throw new Error(
+                `Cache ${failure} error and on-cache-error is set to error.`
+            );
         }
     } catch (error: unknown) {
         if (error instanceof Error) {

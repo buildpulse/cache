@@ -23,6 +23,28 @@ inputs:
     description: 'Check if a cache entry exists for the given input(s) (key, restore-keys) without downloading the cache'
     default: 'false'
     required: false
+  aws-access-key-id:
+    description: 'Access key for the cache bucket. Optional: a BuildPulse runner supplies credentials on its own. Set this only when running elsewhere, or when the job configures AWS for its own purposes and you want the cache to be explicit about which credentials are its own.'
+    required: false
+  aws-secret-access-key:
+    description: 'Secret key for the cache bucket. Must be set together with aws-access-key-id.'
+    required: false
+  aws-session-token:
+    description: 'Session token, when aws-access-key-id and aws-secret-access-key are temporary credentials.'
+    required: false
+  aws-credentials-file:
+    description: 'Absolute path to a shared credentials file to read instead of passing keys directly. Takes an absolute path, so it does not depend on HOME.'
+    required: false
+  aws-profile:
+    description: 'Profile to read from the credentials file. Defaults to the profile the runner supplies, or to default.'
+    required: false
+  aws-region:
+    description: 'Region of the cache bucket. Defaults to what the runner supplies.'
+    required: false
+  on-cache-error:
+    description: 'What to do when the cache is configured but cannot be reached: warn (default, the job continues without a cache) or error (fail the step). A plain cache miss is never an error; see fail-on-cache-miss for that.'
+    default: 'warn'
+    required: false
 outputs:
   cache-hit:
     description: 'A boolean value to indicate an exact match was found for the primary key'
@@ -30,6 +52,8 @@ outputs:
     description: 'A resolved cache key for which cache match was attempted'
   cache-matched-key:
     description: 'Key of the cache that was restored, it could either be the primary key on cache-hit or a partial/complete match of one of the restore keys'
+  cache-error:
+    description: 'Set when the cache was configured but could not be used: auth when credentials were rejected, other for any other failure. Empty when the cache worked, including on a plain miss.'
 runs:
   using: 'node20'
   main: '../dist/restore-only/index.js'

@@ -2,8 +2,14 @@ import * as core from "@actions/core";
 import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import * as path from "path";
 
+import { CacheFailure, report } from "./cacheErrors";
 import { Events, Inputs, Outputs, State } from "./constants";
-import { downloadFromS3, initializeS3Client, s3Client } from "./s3Client";
+import {
+    downloadFromS3,
+    initializeS3Client,
+    resolvedCredentialSource,
+    s3Client
+} from "./s3Client";
 import {
     IStateProvider,
     NullStateProvider,
@@ -16,6 +22,9 @@ export async function restoreImpl(
     earlyExit?: boolean | undefined
 ): Promise<string | undefined> {
     let cacheKey: string | undefined;
+    // Anything worse than a plain miss, remembered so the end of the run can
+    // fail the step when the caller asked for that.
+    let failure: CacheFailure | undefined;
     try {
         if (!utils.isCacheFeatureAvailable()) {
             core.setOutput(Outputs.CacheHit, "false");
@@ -37,7 +46,9 @@ export async function restoreImpl(
             core.getInput(Inputs.Key);
         stateProvider.setState(State.CachePrimaryKey, primaryKey);
 
-        const restoreKeys = utils.getInputAsArray(Inputs.RestoreKeys).slice(1);
+        // No slice. An earlier version dropped the first entry here, which
+        // silently discarded the user's highest-priority fallback key.
+        const restoreKeys = utils.getInputAsArray(Inputs.RestoreKeys);
         const cachePathPatterns = utils.getInputAsArray(Inputs.Path, {
             required: true
         });
@@ -103,12 +114,21 @@ export async function restoreImpl(
                     break;
                 }
             } catch (error) {
-                core.info(
-                    `Failed to restore cache from key ${s3Key}: ${
-                        (error as Error).message
-                    }`
-                );
+                const kind = report("restore", error, {
+                    credentialSource: resolvedCredentialSource(),
+                    keyPrefixSet: !!process.env.BP_CACHE_KEY_PREFIX
+                });
+                if (kind !== CacheFailure.Miss) {
+                    failure = kind;
+                }
+                core.info(`No cache restored from ${s3Key}`);
             }
+        }
+
+        if (failure && utils.failOnCacheError()) {
+            throw new Error(
+                `Cache ${failure} error and on-cache-error is set to error.`
+            );
         }
 
         const isExactKeyMatch =
