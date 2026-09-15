@@ -1,116 +1,78 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
-import { Events, Inputs, RefKey } from "../src/constants";
+import { Events, Inputs, RefKey, State } from "../src/constants";
+import * as s3 from "../src/s3Client";
 import { saveRun } from "../src/saveImpl";
 import * as actionUtils from "../src/utils/actionUtils";
 import * as testUtils from "../src/utils/testUtils";
 
-jest.mock("@actions/core");
-jest.mock("@actions/cache");
-jest.mock("../src/utils/actionUtils");
+// saveRun is the post step of the combined action: the key comes from the
+// state the restore step left. saveImpl.test.ts covers the save itself.
+jest.mock("../src/s3Client", () => ({
+    initializeS3Client: jest.fn(),
+    resolvedCredentialSource: jest.fn(() => "test credentials"),
+    uploadToS3: jest.fn()
+}));
 
-beforeAll(() => {
-    jest.spyOn(core, "getInput").mockImplementation((name, options) => {
-        return jest.requireActual("@actions/core").getInput(name, options);
-    });
+const upload = s3.uploadToS3 as jest.MockedFunction<typeof s3.uploadToS3>;
 
-    jest.spyOn(core, "getState").mockImplementation(name => {
-        return jest.requireActual("@actions/core").getState(name);
-    });
+const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
 
-    jest.spyOn(actionUtils, "getInputAsArray").mockImplementation(
-        (name, options) => {
-            return jest
-                .requireActual("../src/utils/actionUtils")
-                .getInputAsArray(name, options);
-        }
-    );
-
-    jest.spyOn(actionUtils, "getInputAsInt").mockImplementation(
-        (name, options) => {
-            return jest
-                .requireActual("../src/utils/actionUtils")
-                .getInputAsInt(name, options);
-        }
-    );
-
-    jest.spyOn(actionUtils, "getInputAsBool").mockImplementation(
-        (name, options) => {
-            return jest
-                .requireActual("../src/utils/actionUtils")
-                .getInputAsBool(name, options);
-        }
-    );
-
-    jest.spyOn(actionUtils, "isExactKeyMatch").mockImplementation(
-        (key, cacheResult) => {
-            return jest
-                .requireActual("../src/utils/actionUtils")
-                .isExactKeyMatch(key, cacheResult);
-        }
-    );
-
-    jest.spyOn(actionUtils, "isValidEvent").mockImplementation(() => {
-        const actualUtils = jest.requireActual("../src/utils/actionUtils");
-        return actualUtils.isValidEvent();
-    });
-});
+let work: string;
+let cacheDir: string;
 
 beforeEach(() => {
+    jest.restoreAllMocks();
+    upload.mockReset();
     process.env[Events.Key] = Events.Push;
     process.env[RefKey] = "refs/heads/feature-branch";
+    process.env.BP_CACHE_S3_BUCKET = "test-bucket";
 
-    jest.spyOn(actionUtils, "isGhes").mockImplementation(() => false);
-    jest.spyOn(actionUtils, "isCacheFeatureAvailable").mockImplementation(
-        () => true
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "cache-save-run-"));
+    cacheDir = path.join(work, "node_modules");
+    fs.mkdirSync(cacheDir);
+
+    jest.spyOn(actionUtils, "isCacheFeatureAvailable").mockReturnValue(true);
+    jest.spyOn(core, "getState").mockImplementation(name =>
+        name === State.CachePrimaryKey ? primaryKey : ""
     );
+    jest.spyOn(core, "setFailed").mockImplementation();
+    jest.spyOn(core, "warning").mockImplementation();
+    jest.spyOn(core, "info").mockImplementation();
 });
 
 afterEach(() => {
     testUtils.clearInputs();
     delete process.env[Events.Key];
     delete process.env[RefKey];
+    delete process.env.BP_CACHE_S3_BUCKET;
+    fs.rmSync(work, { recursive: true, force: true });
 });
 
-test("save with valid inputs uploads a cache", async () => {
-    const failedMock = jest.spyOn(core, "setFailed");
-
-    const primaryKey = "Linux-node-bb828da54c148048dd17899ba9fda624811cfb43";
-    const savedCacheKey = "Linux-node-";
-
-    jest.spyOn(core, "getState")
-        // Cache Entry State
-        .mockImplementationOnce(() => {
-            return primaryKey;
-        })
-        // Cache Key State
-        .mockImplementationOnce(() => {
-            return savedCacheKey;
-        });
-
-    const inputPath = "node_modules";
-    testUtils.setInput(Inputs.Path, inputPath);
-    testUtils.setInput(Inputs.UploadChunkSize, "4000000");
-
-    const cacheId = 4;
-    const saveCacheMock = jest
-        .spyOn(cache, "saveCache")
-        .mockImplementationOnce(() => {
-            return Promise.resolve(cacheId);
-        });
+test("saveRun uploads under the key the restore step stored", async () => {
+    testUtils.setInput(Inputs.Path, cacheDir);
+    upload.mockResolvedValue(undefined);
 
     await saveRun();
 
-    expect(saveCacheMock).toHaveBeenCalledTimes(1);
-    expect(saveCacheMock).toHaveBeenCalledWith(
-        [inputPath],
-        primaryKey,
-        {
-            uploadChunkSize: 4000000
-        },
-        false
+    expect(upload).toHaveBeenCalledWith(
+        "test-bucket",
+        `${primaryKey}/node_modules`,
+        expect.stringMatching(/node_modules$/)
     );
+});
 
-    expect(failedMock).toHaveBeenCalledTimes(0);
+test("saveRun with earlyExit exits 0 after a save", async () => {
+    testUtils.setInput(Inputs.Path, cacheDir);
+    upload.mockResolvedValue(undefined);
+    const exitMock = jest
+        .spyOn(process, "exit")
+        .mockImplementation((() => undefined) as never);
+
+    await saveRun(true);
+
+    expect(exitMock).toHaveBeenCalledWith(0);
 });

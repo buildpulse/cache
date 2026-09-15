@@ -120,8 +120,11 @@ export async function saveImpl(
             core.warning("Failed to save cache to S3");
         }
 
+        // setFailed, not throw: the catch below downgrades everything it sees
+        // to a warning, so a throw here kept the step green even though the
+        // caller asked for it to fail.
         if (failure && utils.failOnCacheError()) {
-            throw new Error(
+            core.setFailed(
                 `Cache ${failure} error and on-cache-error is set to error.`
             );
         }

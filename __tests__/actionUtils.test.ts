@@ -1,12 +1,11 @@
-import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 
 import { Events, RefKey } from "../src/constants";
+import * as credentials from "../src/credentials";
 import * as actionUtils from "../src/utils/actionUtils";
 import * as testUtils from "../src/utils/testUtils";
 
 jest.mock("@actions/core");
-jest.mock("@actions/cache");
 
 beforeAll(() => {
     jest.spyOn(core, "getInput").mockImplementation((name, options) => {
@@ -79,14 +78,14 @@ test("isExactKeyMatch with same key and different casing returns true", () => {
     expect(actionUtils.isExactKeyMatch(key, cacheKey)).toBe(true);
 });
 
-test("logWarning logs a message with a warning prefix", () => {
+test("logWarning emits a real warning annotation", () => {
     const message = "A warning occurred.";
 
-    const infoMock = jest.spyOn(core, "info");
+    const warningMock = jest.spyOn(core, "warning");
 
     actionUtils.logWarning(message);
 
-    expect(infoMock).toHaveBeenCalledWith(`[warning]${message}`);
+    expect(warningMock).toHaveBeenCalledWith(message);
 });
 
 test("isValidEvent returns false for event that does not have a branch or tag", () => {
@@ -194,40 +193,53 @@ test("getInputAsBool throws if required and value missing", () => {
     ).toThrowError();
 });
 
-test("isCacheFeatureAvailable for ac enabled", () => {
-    jest.spyOn(cache, "isFeatureAvailable").mockImplementation(() => true);
+// "Is the cache configured for this job" -- a bucket, a region and some
+// credential source. Whether the credentials work is a later, louder question.
+describe("isCacheFeatureAvailable", () => {
+    let regionSpy: jest.SpyInstance;
+    let credentialsSpy: jest.SpyInstance;
+    let warningMock: jest.SpyInstance;
 
-    expect(actionUtils.isCacheFeatureAvailable()).toBe(true);
-});
+    beforeEach(() => {
+        process.env.BP_CACHE_S3_BUCKET = "test-bucket";
+        regionSpy = jest
+            .spyOn(credentials, "resolveRegion")
+            .mockReturnValue({ region: "us-west-2", fromAmbient: false });
+        credentialsSpy = jest
+            .spyOn(credentials, "resolveCredentials")
+            .mockReturnValue({
+                source: "BP_CACHE_AWS_CREDENTIALS_FILE"
+            } as credentials.ResolvedCredentials);
+        warningMock = jest.spyOn(core, "warning");
+    });
 
-test("isCacheFeatureAvailable for ac disabled on GHES", () => {
-    jest.spyOn(cache, "isFeatureAvailable").mockImplementation(() => false);
+    afterEach(() => {
+        delete process.env.BP_CACHE_S3_BUCKET;
+        regionSpy.mockRestore();
+        credentialsSpy.mockRestore();
+        warningMock.mockRestore();
+    });
 
-    const message = `Cache action is only supported on GHES version >= 3.5. If you are on version >=3.5 Please check with GHES admin if Actions cache service is enabled or not.
-Otherwise please upgrade to GHES version >= 3.5 and If you are also using Github Connect, please unretire the actions/cache namespace before upgrade (see https://docs.github.com/en/enterprise-server@3.5/admin/github-actions/managing-access-to-actions-from-githubcom/enabling-automatic-access-to-githubcom-actions-using-github-connect#automatic-retirement-of-namespaces-for-actions-accessed-on-githubcom)`;
-    const infoMock = jest.spyOn(core, "info");
+    test("is true with a bucket, a region and a credential source", () => {
+        expect(actionUtils.isCacheFeatureAvailable()).toBe(true);
+        expect(warningMock).not.toHaveBeenCalled();
+    });
 
-    try {
-        process.env["GITHUB_SERVER_URL"] = "http://example.com";
+    test("is false without a bucket, and names the bucket", () => {
+        delete process.env.BP_CACHE_S3_BUCKET;
+
         expect(actionUtils.isCacheFeatureAvailable()).toBe(false);
-        expect(infoMock).toHaveBeenCalledWith(`[warning]${message}`);
-    } finally {
-        delete process.env["GITHUB_SERVER_URL"];
-    }
-});
+        expect(warningMock).toHaveBeenCalledTimes(1);
+        expect(warningMock.mock.calls[0][0]).toContain("BP_CACHE_S3_BUCKET");
+    });
 
-test("isCacheFeatureAvailable for ac disabled on dotcom", () => {
-    jest.spyOn(cache, "isFeatureAvailable").mockImplementation(() => false);
+    test("is false without any credential source, and names the credentials", () => {
+        credentialsSpy.mockReturnValue({
+            source: "none"
+        } as credentials.ResolvedCredentials);
 
-    const message =
-        "An internal error has occurred in cache backend. Please check https://www.githubstatus.com/ for any ongoing issue in actions.";
-    const infoMock = jest.spyOn(core, "info");
-
-    try {
-        process.env["GITHUB_SERVER_URL"] = "http://github.com";
         expect(actionUtils.isCacheFeatureAvailable()).toBe(false);
-        expect(infoMock).toHaveBeenCalledWith(`[warning]${message}`);
-    } finally {
-        delete process.env["GITHUB_SERVER_URL"];
-    }
+        expect(warningMock).toHaveBeenCalledTimes(1);
+        expect(warningMock.mock.calls[0][0]).toContain("credentials");
+    });
 });
