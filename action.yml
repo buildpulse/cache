@@ -12,12 +12,16 @@ inputs:
     description: 'An ordered multiline string listing the prefix-matched keys, that are used for restoring stale cache if no cache hit occurred for key. Note `cache-hit` returns false in this case.'
     required: false
   upload-chunk-size:
-    description: 'The chunk size used to split up large files during upload, in bytes'
+    description: 'Has no effect. The cache sets its own upload part size.'
     required: false
+    deprecationMessage: |
+      upload-chunk-size has no effect and will be removed in a future release.
   enableCrossOsArchive:
-    description: 'An optional boolean when enabled, allows windows runners to save or restore caches that can be restored or saved respectively on other platforms'
+    description: 'Has no effect. Accepted so workflows written for actions/cache keep working.'
     default: 'false'
     required: false
+    deprecationMessage: |
+      enableCrossOsArchive has no effect and will be removed in a future release.
   fail-on-cache-miss:
     description: 'Fail the workflow if cache entry is not found'
     default: 'false'
@@ -27,9 +31,13 @@ inputs:
     default: 'false'
     required: false
   save-always:
-    description: 'Run the post step to save the cache even if another step before fails'
+    description: 'Has no effect. See the deprecation message.'
     default: 'false'
     required: false
+    deprecationMessage: |
+      save-always does not work as intended and will be removed in a future release.
+      To save a cache even when an earlier step fails, use separate restore and save steps,
+      and give the save step `if: always()`.
   aws-access-key-id:
     description: 'Access key for the cache bucket. Optional: a BuildPulse runner supplies credentials on its own. Set this only when running elsewhere, or when the job configures AWS for its own purposes and you want the cache to be explicit about which credentials are its own.'
     required: false
@@ -61,7 +69,7 @@ runs:
   using: 'node20'
   main: 'dist/restore/index.js'
   post: 'dist/save/index.js'
-  post-if: "success() || github.event.inputs.save-always"
+  post-if: "success()"
 branding:
   icon: 'archive'
   color: 'gray-dark'

@@ -41,9 +41,11 @@ export async function restoreImpl(
             return undefined;
         }
 
+        // Required: an empty key would restore from "<prefix>/<basename>",
+        // an entry that every workflow caching the same path name shares.
         const primaryKey =
             stateProvider.getState(State.CachePrimaryKey) ||
-            core.getInput(Inputs.Key);
+            core.getInput(Inputs.Key, { required: true });
         stateProvider.setState(State.CachePrimaryKey, primaryKey);
 
         // No slice. An earlier version dropped the first entry here, which
@@ -95,8 +97,11 @@ export async function restoreImpl(
                             throw headError;
                         }
                     }
-                    cacheKey = s3Key;
-                    break;
+                    // Nothing under this key, so try the next one. This used to
+                    // set cacheKey and break here as well, which reported
+                    // cache-hit=true for a cache that did not exist and never
+                    // looked at the restore keys.
+                    core.info(`No cache found for key: ${s3Key}`);
                 } else {
                     for (const cachePath of effectivePaths) {
                         s3Key = utils.cacheObjectKey(key, cachePath);

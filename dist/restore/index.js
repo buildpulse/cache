@@ -51676,8 +51676,10 @@ function restoreImpl(stateProvider, earlyExit) {
                 utils.logWarning(`Event Validation Error: The event type ${process.env[constants_1.Events.Key]} is not supported because it's not tied to a branch or tag ref.`);
                 return undefined;
             }
+            // Required: an empty key would restore from "<prefix>/<basename>",
+            // an entry that every workflow caching the same path name shares.
             const primaryKey = stateProvider.getState(constants_1.State.CachePrimaryKey) ||
-                core.getInput(constants_1.Inputs.Key);
+                core.getInput(constants_1.Inputs.Key, { required: true });
             stateProvider.setState(constants_1.State.CachePrimaryKey, primaryKey);
             // No slice. An earlier version dropped the first entry here, which
             // silently discarded the user's highest-priority fallback key.
@@ -51720,8 +51722,11 @@ function restoreImpl(stateProvider, earlyExit) {
                                 throw headError;
                             }
                         }
-                        cacheKey = s3Key;
-                        break;
+                        // Nothing under this key, so try the next one. This used to
+                        // set cacheKey and break here as well, which reported
+                        // cache-hit=true for a cache that did not exist and never
+                        // looked at the restore keys.
+                        core.info(`No cache found for key: ${s3Key}`);
                     }
                     else {
                         for (const cachePath of effectivePaths) {

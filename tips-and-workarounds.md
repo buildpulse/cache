@@ -28,6 +28,8 @@ Reusing cache across feature branches is not allowed today to provide cache [iso
 
 ## Cross OS cache
 
+> **Note:** `enableCrossOsArchive` has no effect in this action. The rest of this section describes `actions/cache`.
+
 From `v3.2.3` cache is cross-os compatible when `enableCrossOsArchive` input is passed as true. This means that a cache created on `ubuntu-latest` or `mac-latest` can be used by `windows-latest` and vice versa, provided the workflow which runs on `windows-latest` have input `enableCrossOsArchive` as true. This is useful to cache dependencies which are independent of the runner platform. This will help reduce the consumption of the cache quota and help build for multiple platforms from the same cache. Things to keep in mind while using this feature:
 
 - Only cache files that are compatible across OSs.

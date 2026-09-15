@@ -12,9 +12,11 @@ inputs:
     description: 'An ordered multiline string listing the prefix-matched keys, that are used for restoring stale cache if no cache hit occurred for key. Note `cache-hit` returns false in this case.'
     required: false
   enableCrossOsArchive:
-    description: 'An optional boolean when enabled, allows windows runners to restore caches that were saved on other platforms'
+    description: 'Has no effect. Accepted so workflows written for actions/cache keep working.'
     default: 'false'
     required: false
+    deprecationMessage: |
+      enableCrossOsArchive has no effect and will be removed in a future release.
   fail-on-cache-miss:
     description: 'Fail the workflow if cache entry is not found'
     default: 'false'

@@ -9,12 +9,16 @@ inputs:
     description: 'An explicit key for saving the cache'
     required: true
   upload-chunk-size:
-    description: 'The chunk size used to split up large files during upload, in bytes'
+    description: 'Has no effect. The cache sets its own upload part size.'
     required: false
+    deprecationMessage: |
+      upload-chunk-size has no effect and will be removed in a future release.
   enableCrossOsArchive:
-    description: 'An optional boolean when enabled, allows windows runners to save caches that can be restored on other platforms'
+    description: 'Has no effect. Accepted so workflows written for actions/cache keep working.'
     default: 'false'
     required: false
+    deprecationMessage: |
+      enableCrossOsArchive has no effect and will be removed in a future release.
   aws-access-key-id:
     description: 'Access key for the cache bucket. Optional: a BuildPulse runner supplies credentials on its own. Set this only when running elsewhere, or when the job configures AWS for its own purposes and you want the cache to be explicit about which credentials are its own.'
     required: false
