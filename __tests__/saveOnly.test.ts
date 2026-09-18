@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import { resetReportState } from "../src/cacheErrors";
 import { Events, Inputs, RefKey } from "../src/constants";
 import * as s3 from "../src/s3Client";
 import { saveOnlyRun } from "../src/saveImpl";
@@ -73,4 +74,26 @@ test("saveOnlyRun warns when nothing was saved", async () => {
     await saveOnlyRun();
 
     expect(warningMock).toHaveBeenCalledWith("Cache save to S3 failed.");
+});
+
+test("saveOnlyRun with earlyExit exits 1 when on-cache-error is error and the upload is denied", async () => {
+    resetReportState();
+    testUtils.setInput(Inputs.Path, cacheDir);
+    testUtils.setInput(Inputs.Key, primaryKey);
+    testUtils.setInput(Inputs.OnCacheError, "error");
+    upload.mockRejectedValue(
+        Object.assign(new Error("AccessDenied from S3"), {
+            name: "AccessDenied"
+        })
+    );
+    const exitMock = jest
+        .spyOn(process, "exit")
+        .mockImplementation((() => undefined) as never);
+
+    await saveOnlyRun(true);
+
+    expect(core.setFailed).toHaveBeenCalledWith(
+        "Cache auth error and on-cache-error is set to error."
+    );
+    expect(exitMock).toHaveBeenCalledWith(1);
 });

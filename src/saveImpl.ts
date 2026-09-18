@@ -27,7 +27,8 @@ process.on("uncaughtException", e =>
 );
 
 export async function saveImpl(
-    stateProvider: IStateProvider
+    stateProvider: IStateProvider,
+    earlyExit?: boolean | undefined
 ): Promise<string | void> {
     let cacheKey: string | undefined;
     // Anything worse than a plain miss, so the end of the run can fail the step
@@ -122,11 +123,16 @@ export async function saveImpl(
 
         // setFailed, not throw: the catch below downgrades everything it sees
         // to a warning, so a throw here kept the step green even though the
-        // caller asked for it to fail.
+        // caller asked for it to fail. And exit here, not in the caller: the
+        // callers end with process.exit(0), which discards the exit code
+        // setFailed recorded. Same shape as restoreImpl.
         if (failure && utils.failOnCacheError()) {
             core.setFailed(
                 `Cache ${failure} error and on-cache-error is set to error.`
             );
+            if (earlyExit) {
+                process.exit(1);
+            }
         }
     } catch (error: unknown) {
         if (error instanceof Error) {
@@ -144,7 +150,7 @@ export async function saveOnlyRun(
     earlyExit?: boolean | undefined
 ): Promise<void> {
     try {
-        const cacheId = await saveImpl(new NullStateProvider());
+        const cacheId = await saveImpl(new NullStateProvider(), earlyExit);
         if (!cacheId) {
             core.warning(`Cache save to S3 failed.`);
         }
@@ -167,7 +173,7 @@ export async function saveOnlyRun(
 
 export async function saveRun(earlyExit?: boolean | undefined): Promise<void> {
     try {
-        await saveImpl(new StateProvider());
+        await saveImpl(new StateProvider(), earlyExit);
     } catch (err) {
         console.error(err);
         if (earlyExit) {

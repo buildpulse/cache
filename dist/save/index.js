@@ -52085,7 +52085,7 @@ process.on("uncaughtException", e => (0, cacheErrors_1.report)("save", e, {
     credentialSource: (0, s3Client_1.resolvedCredentialSource)(),
     keyPrefixSet: !!process.env.BP_CACHE_KEY_PREFIX
 }));
-function saveImpl(stateProvider) {
+function saveImpl(stateProvider, earlyExit) {
     return __awaiter(this, void 0, void 0, function* () {
         let cacheKey;
         // Anything worse than a plain miss, so the end of the run can fail the step
@@ -52157,9 +52157,14 @@ function saveImpl(stateProvider) {
             }
             // setFailed, not throw: the catch below downgrades everything it sees
             // to a warning, so a throw here kept the step green even though the
-            // caller asked for it to fail.
+            // caller asked for it to fail. And exit here, not in the caller: the
+            // callers end with process.exit(0), which discards the exit code
+            // setFailed recorded. Same shape as restoreImpl.
             if (failure && utils.failOnCacheError()) {
                 core.setFailed(`Cache ${failure} error and on-cache-error is set to error.`);
+                if (earlyExit) {
+                    process.exit(1);
+                }
             }
         }
         catch (error) {
@@ -52177,7 +52182,7 @@ exports.saveImpl = saveImpl;
 function saveOnlyRun(earlyExit) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            const cacheId = yield saveImpl(new stateProvider_1.NullStateProvider());
+            const cacheId = yield saveImpl(new stateProvider_1.NullStateProvider(), earlyExit);
             if (!cacheId) {
                 core.warning(`Cache save to S3 failed.`);
             }
@@ -52202,7 +52207,7 @@ exports.saveOnlyRun = saveOnlyRun;
 function saveRun(earlyExit) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            yield saveImpl(new stateProvider_1.StateProvider());
+            yield saveImpl(new stateProvider_1.StateProvider(), earlyExit);
         }
         catch (err) {
             console.error(err);
