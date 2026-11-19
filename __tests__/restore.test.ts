@@ -54,7 +54,7 @@ test("restoreRun leaves the primary and matched keys in state for the post step"
     await restoreRun();
 
     expect(stateMock).toHaveBeenCalledWith("CACHE_KEY", key);
-    expect(stateMock).toHaveBeenCalledWith("CACHE_RESULT", `${key}/${path}`);
+    expect(stateMock).toHaveBeenCalledWith("CACHE_RESULT", key);
     expect(outputMock).not.toHaveBeenCalledWith(
         "cache-primary-key",
         expect.anything()

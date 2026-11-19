@@ -124,7 +124,9 @@ test("a hit on the primary key restores it and is an exact hit", async () => {
     expect(download).toHaveBeenCalledWith(bucket, `${key}/${path}`, path);
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
     expect(stateMock).toHaveBeenCalledWith("CACHE_KEY", key);
-    expect(stateMock).toHaveBeenCalledWith("CACHE_RESULT", `${key}/${path}`);
+    // The user's key, not the object key: saveImpl compares it with the
+    // primary key to decide whether to skip the upload.
+    expect(stateMock).toHaveBeenCalledWith("CACHE_RESULT", key);
     expect(failedMock).not.toHaveBeenCalled();
 });
 
@@ -141,10 +143,7 @@ test("a miss on the primary key falls back to the restore key, which is not an e
         `${restoreKey}/${path}`
     ]);
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "false");
-    expect(stateMock).toHaveBeenCalledWith(
-        "CACHE_RESULT",
-        `${restoreKey}/${path}`
-    );
+    expect(stateMock).toHaveBeenCalledWith("CACHE_RESULT", restoreKey);
     expect(warningMock).not.toHaveBeenCalled();
     expect(errorMock).not.toHaveBeenCalled();
     expect(failedMock).not.toHaveBeenCalled();
