@@ -324,6 +324,174 @@ function detectCompressionFormat(header: Buffer): "gzip" | "zstd" | "unknown" {
     return "unknown";
 }
 
+// PARALLEL RANGED DOWNLOAD.
+//
+// One GetObject stream reads S3 at ~34 MB/s from a BuildPulse runner, which
+// made a restore from the in-region bucket SLOWER than actions/cache from
+// GitHub's storage (~52 MB/s). Measured 2026-11-19 on bp-ubuntu-latest-x64-4x
+// with a 3.3 GB zstd Go build cache: one stream 97 s; `aws s3 cp` with 32
+// parallel 16 MB ranges 9.6 s (343 MB/s). So the object is fetched as 16 MB
+// ranges, DEFAULT_DOWNLOAD_CONCURRENCY at a time, each written at its own offset.
+//
+// Every range after the first carries If-Match with the first response's ETag,
+// so a save that overwrites the key mid-download fails the restore (412)
+// instead of stitching two archives together.
+//
+// BP_CACHE_DOWNLOAD_CONCURRENCY overrides the concurrency; 1 is the old single
+// GetObject. A ranged GET of an empty object answers 416 InvalidRange, which
+// falls back to a plain GET.
+export const DOWNLOAD_PART_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_DOWNLOAD_CONCURRENCY = 16;
+const PART_ATTEMPTS = 3;
+
+export function downloadConcurrency(): number {
+    const raw = process.env.BP_CACHE_DOWNLOAD_CONCURRENCY;
+    if (raw === undefined || raw.trim() === "") {
+        return DEFAULT_DOWNLOAD_CONCURRENCY;
+    }
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1) {
+        return DEFAULT_DOWNLOAD_CONCURRENCY;
+    }
+    return Math.min(n, 64);
+}
+
+// "bytes 0-16777215/3305730542" -> 3305730542
+function totalFromContentRange(contentRange: string | undefined): number {
+    const m = /\/(\d+)\s*$/.exec(contentRange || "");
+    return m ? Number(m[1]) : NaN;
+}
+
+async function writeBodyAt(
+    body: unknown,
+    file: string,
+    offset: number,
+    expected: number
+): Promise<void> {
+    if (!(body instanceof Readable)) {
+        throw new Error("Invalid response body from S3");
+    }
+    const out = fs.createWriteStream(file, { flags: "r+", start: offset });
+    await promisify(pipeline)(body, out);
+    if (out.bytesWritten !== expected) {
+        throw new Error(
+            `S3 range at ${offset} returned ${out.bytesWritten} bytes, expected ${expected}`
+        );
+    }
+}
+
+export async function downloadRanges(
+    client: S3Client,
+    bucketName: string,
+    key: string,
+    file: string,
+    concurrency: number,
+    partBytes: number = DOWNLOAD_PART_BYTES
+): Promise<void> {
+    const started = Date.now();
+    let first;
+    try {
+        first = await client.send(
+            new GetObjectCommand({
+                Bucket: bucketName,
+                Key: key,
+                Range: `bytes=0-${partBytes - 1}`
+            })
+        );
+    } catch (error) {
+        if ((error as any)?.name !== "InvalidRange") {
+            throw error; // NoSuchKey, AccessDenied, ... reach the caller intact
+        }
+        const { Body } = await client.send(
+            new GetObjectCommand({ Bucket: bucketName, Key: key })
+        );
+        if (!(Body instanceof Readable)) {
+            throw new Error("Invalid response body from S3");
+        }
+        await promisify(pipeline)(Body, fs.createWriteStream(file));
+        return;
+    }
+
+    const total = totalFromContentRange(first.ContentRange);
+    if (!Number.isFinite(total)) {
+        // No Content-Range: the whole object came back in this response.
+        if (!(first.Body instanceof Readable)) {
+            throw new Error("Invalid response body from S3");
+        }
+        await promisify(pipeline)(first.Body, fs.createWriteStream(file));
+        return;
+    }
+
+    const fh = await fs.promises.open(file, "w");
+    await fh.truncate(total);
+    await fh.close();
+
+    const firstLen = Math.min(partBytes, total);
+    const etag = first.ETag;
+    const offsets: number[] = [];
+    for (let o = firstLen; o < total; o += partBytes) {
+        offsets.push(o);
+    }
+
+    let next = 0;
+    let failed: unknown;
+    const worker = async (): Promise<void> => {
+        while (failed === undefined && next < offsets.length) {
+            const offset = offsets[next++];
+            const end = Math.min(offset + partBytes, total) - 1;
+            for (let attempt = 1; ; attempt++) {
+                try {
+                    const part = await client.send(
+                        new GetObjectCommand({
+                            Bucket: bucketName,
+                            Key: key,
+                            Range: `bytes=${offset}-${end}`,
+                            IfMatch: etag
+                        })
+                    );
+                    await writeBodyAt(
+                        part.Body,
+                        file,
+                        offset,
+                        end - offset + 1
+                    );
+                    break;
+                } catch (error) {
+                    const status = (error as any)?.$metadata?.httpStatusCode;
+                    // 412: the object changed under us; 403/404: no retry helps.
+                    const final =
+                        status === 412 || status === 403 || status === 404;
+                    if (final || attempt >= PART_ATTEMPTS) {
+                        failed = failed ?? error;
+                        return;
+                    }
+                }
+            }
+        }
+    };
+
+    const workers = Promise.all(
+        Array.from({ length: Math.min(concurrency, offsets.length) }, worker)
+    );
+    // The first range downloads alongside the rest.
+    const head = writeBodyAt(first.Body, file, 0, firstLen).catch(error => {
+        failed = failed ?? error;
+    });
+    await Promise.all([workers, head]);
+    if (failed !== undefined) {
+        throw failed;
+    }
+
+    const secs = (Date.now() - started) / 1000;
+    core.info(
+        `[cache] downloaded ${(total / 1e6).toFixed(0)} MB in ${secs.toFixed(
+            1
+        )} s (${(total / 1e6 / Math.max(secs, 0.001)).toFixed(
+            0
+        )} MB/s, ${concurrency} parallel ranges)`
+    );
+}
+
 export async function downloadFromS3(
     bucketName: string,
     key: string,
@@ -342,12 +510,6 @@ export async function downloadFromS3(
     // key" apart from "we are not allowed to read it". The error now reaches
     // the caller intact.
     {
-        const { Body } = await client.send(command);
-
-        if (!(Body instanceof Readable)) {
-            throw new Error("Invalid response body from S3");
-        }
-
         // Ensure destination directory exists
         if (directory && directory !== ".") {
             fs.mkdirSync(directory, { recursive: true });
@@ -355,9 +517,23 @@ export async function downloadFromS3(
 
         // Download to temp file first (more reliable than streaming with format detection)
         const tempFile = path.join(os.tmpdir(), `cache-download-${Date.now()}`);
-        const writeStream = fs.createWriteStream(tempFile);
 
-        await promisify(pipeline)(Body, writeStream);
+        const concurrency = downloadConcurrency();
+        if (concurrency <= 1) {
+            const { Body } = await client.send(command);
+            if (!(Body instanceof Readable)) {
+                throw new Error("Invalid response body from S3");
+            }
+            await promisify(pipeline)(Body, fs.createWriteStream(tempFile));
+        } else {
+            await downloadRanges(
+                client,
+                bucketName,
+                key,
+                tempFile,
+                concurrency
+            );
+        }
 
         await extractArchive(tempFile, destinationPath);
 
