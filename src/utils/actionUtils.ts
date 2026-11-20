@@ -146,18 +146,40 @@ export function expandHome(pattern: string): string {
 
 // Which paths should restore actually write to?
 //
-// On restore the target usually does not exist yet, so the globber matches
-// nothing and we must fall back to the raw `path` inputs. Those inputs are used
-// directly as the tar extraction destination, so they have to be home-expanded
-// first: `path.dirname("~/x")` is "~", which silently extracts the archive into
-// a directory named "~" under the CWD while the action still reports a cache
-// hit. Split out from restoreImpl so this branch is testable without mocking
-// S3 — the defect lived in the one path unit tests never reached.
-export function effectiveCachePaths(
-    resolved: string[],
-    patterns: string[]
-): string[] {
-    return resolved.length > 0 ? resolved : patterns.map(expandHome);
+// Every literal `path` input, home-expanded, whether or not it exists yet.
+// This used to return only the paths that already existed whenever ANY of them
+// did, and the raw inputs only when none did. Something earlier in a job often
+// creates one of the directories (actions/setup-go creates ~/.cache/go-build),
+// so `path: [~/.cache/go-build, ~/.cache/golangci-lint]` restored go-build
+// alone, reported an exact hit, and the post step skipped the save, so the
+// missing directory never came back. Measured on rclone's lint job: every
+// golangci-lint run started cold, 15 s each instead of about 1 s.
+//
+// Home-expansion matters too: these paths are the tar extraction destination,
+// and `path.dirname("~/x")` is "~", which extracts into a directory named "~"
+// under the CWD while the action still reports a cache hit.
+//
+// Glob patterns keep their old behaviour: what they match now, else the raw
+// pattern. Negations only shape what save uploads, so restore ignores them.
+const GLOB_CHARS = /[*?[\]{}]/;
+
+export async function restorePaths(patterns: string[]): Promise<string[]> {
+    const out: string[] = [];
+    for (const pattern of patterns) {
+        if (!pattern || pattern.startsWith("!")) {
+            continue;
+        }
+        const expanded = expandHome(pattern);
+        const matches = GLOB_CHARS.test(pattern)
+            ? await resolvePaths([pattern])
+            : [];
+        for (const p of matches.length > 0 ? matches : [expanded]) {
+            if (!out.includes(p)) {
+                out.push(p);
+            }
+        }
+    }
+    return out;
 }
 
 export async function resolvePaths(patterns: string[]): Promise<string[]> {

@@ -63,7 +63,11 @@ export async function saveImpl(
         // NO-OP in case of SaveOnly action
         const restoredKey = stateProvider.getCacheState();
 
-        if (utils.isExactKeyMatch(primaryKey, restoredKey)) {
+        // A partial restore (a path missing from the entry) saves anyway, so
+        // the entry gains the missing path instead of staying short forever.
+        const partial = stateProvider.getState(State.CachePartial) === "true";
+
+        if (utils.isExactKeyMatch(primaryKey, restoredKey) && !partial) {
             core.info(
                 `Cache hit occurred on the primary key ${primaryKey}, not saving cache.`
             );

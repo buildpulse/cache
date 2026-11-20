@@ -116,31 +116,57 @@ describe("expandHome", () => {
 
 // This is the branch the out-of-workspace e2e caught: save succeeded, restore
 // reported cache-hit=true, and the files landed in "./~/..." instead of $HOME.
-// These assertions fail against the pre-fix fallback (`: patterns`).
-describe("effectiveCachePaths — the restore fallback", () => {
-    it("home-expands the fallback when nothing resolved", () => {
-        const out = actionUtils.effectiveCachePaths([], ["~/.cache/Cypress"]);
-        expect(out).toEqual([path.join(os.homedir(), ".cache", "Cypress")]);
-        // The defect in one assertion: dirname is the tar extraction target.
+describe("restorePaths: where restore extracts to", () => {
+    it("home-expands a path that does not exist yet", async () => {
+        const out = await actionUtils.restorePaths(["~/.cache/bp-absent-x"]);
+        expect(out).toEqual([path.join(os.homedir(), ".cache", "bp-absent-x")]);
+        // The old defect in one assertion: dirname is the tar extraction target.
         expect(path.dirname(out[0])).not.toBe("~");
     });
 
-    it("prefers resolved paths when the target already exists", () => {
-        const resolved = ["/tmp/already/there"];
-        expect(
-            actionUtils.effectiveCachePaths(resolved, ["~/ignored"])
-        ).toEqual(resolved);
-    });
-
-    it("expands every pattern, not just the first", () => {
-        const out = actionUtils.effectiveCachePaths(
-            [],
-            ["~/a", "/var/cache/apt/archives", "~/b"]
-        );
+    it("expands every pattern, not just the first", async () => {
+        const out = await actionUtils.restorePaths([
+            "~/a",
+            "/var/cache/apt/archives",
+            "~/b"
+        ]);
         expect(out).toEqual([
             path.join(os.homedir(), "a"),
             "/var/cache/apt/archives",
             path.join(os.homedir(), "b")
         ]);
+    });
+
+    // The rclone lint regression: actions/setup-go had already created
+    // ~/.cache/go-build, so only it was restored and golangci-lint's cache,
+    // the second path, never was.
+    it("keeps a missing path when another one already exists", async () => {
+        const present = path.join(outside, "archives");
+        const absent = path.join(outside, "not-yet");
+        const out = await actionUtils.restorePaths([present, absent]);
+        expect(out).toEqual([present, absent]);
+    });
+
+    it("keeps the input order", async () => {
+        const present = path.join(outside, "archives");
+        const absent = path.join(outside, "not-yet");
+        const out = await actionUtils.restorePaths([absent, present]);
+        expect(out).toEqual([absent, present]);
+    });
+
+    it("expands a glob that matches, keeps a glob that does not", async () => {
+        const out = await actionUtils.restorePaths([
+            path.join(outside, "arch*"),
+            path.join(outside, "nothing*")
+        ]);
+        expect(out).toEqual([
+            path.join(outside, "archives"),
+            path.join(outside, "nothing*")
+        ]);
+    });
+
+    it("ignores negations and blank lines", async () => {
+        const out = await actionUtils.restorePaths(["/x/a", "!/x/a/tmp", ""]);
+        expect(out).toEqual(["/x/a"]);
     });
 });

@@ -31,7 +31,10 @@ export enum Outputs {
 
 export enum State {
     CachePrimaryKey = "CACHE_KEY",
-    CacheMatchedKey = "CACHE_RESULT"
+    CacheMatchedKey = "CACHE_RESULT",
+    // "true" when the matched entry lacked one of the paths after the first.
+    // The post step then saves even on an exact key match, so the entry heals.
+    CachePartial = "CACHE_PARTIAL"
 }
 
 export enum Events {

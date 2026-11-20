@@ -39,7 +39,11 @@ export class NullStateProvider extends StateProviderBase {
     ]);
 
     setState = (key: string, value: string) => {
-        core.setOutput(this.stateToOutputMap.get(key) as string, value);
+        // Only some state has a matching output (CACHE_PARTIAL has none).
+        const output = this.stateToOutputMap.get(key);
+        if (output) {
+            core.setOutput(output, value);
+        }
     };
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     getState = (key: string) => "";
