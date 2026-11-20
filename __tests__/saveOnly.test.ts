@@ -60,7 +60,9 @@ test("saveOnlyRun takes the key from its own input", async () => {
 
     expect(upload).toHaveBeenCalledWith(
         "test-bucket",
-        `${primaryKey}/node_modules`,
+        expect.stringMatching(
+            new RegExp(`^${primaryKey}/node_modules\\.[0-9a-f]{12}$`)
+        ),
         expect.stringMatching(/node_modules$/)
     );
     expect(warningMock).not.toHaveBeenCalledWith("Cache save to S3 failed.");

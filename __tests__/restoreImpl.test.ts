@@ -27,6 +27,9 @@ const bucket = "test-bucket";
 // Does not exist, so path resolution falls back to the raw input, as it does
 // on a real restore where the target has not been created yet.
 const path = "bp-missing-cache-dir";
+// Current object name (basename + path hash) and the pre-v7.0.5 one.
+const obj = (k: string): string => actionUtils.cacheObjectKey(k, path);
+const legacy = (k: string): string => actionUtils.legacyCacheObjectKey(k, path);
 const key = "node-test";
 const restoreKey = "node-";
 
@@ -121,7 +124,7 @@ test("a hit on the primary key restores it and is an exact hit", async () => {
     await restoreImpl(new StateProvider());
 
     expect(download).toHaveBeenCalledTimes(1);
-    expect(download).toHaveBeenCalledWith(bucket, `${key}/${path}`, path);
+    expect(download).toHaveBeenCalledWith(bucket, obj(key), path);
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
     expect(stateMock).toHaveBeenCalledWith("CACHE_KEY", key);
     // The user's key, not the object key: saveImpl compares it with the
@@ -132,15 +135,17 @@ test("a hit on the primary key restores it and is an exact hit", async () => {
 
 test("a miss on the primary key falls back to the restore key, which is not an exact hit", async () => {
     testUtils.setInputs({ path, key, restoreKeys: [restoreKey] });
-    download
-        .mockRejectedValueOnce(awsError("NoSuchKey"))
-        .mockResolvedValueOnce(undefined);
+    download.mockImplementation(async (_b, objectKey) => {
+        if (objectKey !== obj(restoreKey)) throw awsError("NoSuchKey");
+    });
 
     await restoreImpl(new StateProvider());
 
+    // Current name, then the legacy name, for each key in turn.
     expect(download.mock.calls.map(call => call[1])).toEqual([
-        `${key}/${path}`,
-        `${restoreKey}/${path}`
+        obj(key),
+        legacy(key),
+        obj(restoreKey)
     ]);
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "false");
     expect(stateMock).toHaveBeenCalledWith("CACHE_RESULT", restoreKey);
@@ -155,7 +160,8 @@ test("nothing cached under any key is a quiet miss", async () => {
 
     await restoreImpl(new StateProvider());
 
-    expect(download).toHaveBeenCalledTimes(2);
+    // Current and legacy name under each of the two keys.
+    expect(download).toHaveBeenCalledTimes(4);
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "false");
     expect(infoMock).toHaveBeenCalledWith(
         `Cache not found for input keys: ${key}, ${restoreKey}`
@@ -215,7 +221,7 @@ test("lookup-only reports a hit without downloading when the entry exists", asyn
     expect(headObject).toHaveBeenCalledTimes(1);
     expect(headObject.mock.calls[0][0].input).toEqual({
         Bucket: bucket,
-        Key: `${key}/${path}`
+        Key: obj(key)
     });
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
 });
@@ -232,8 +238,10 @@ test("lookup-only reports no hit when no entry exists under any key", async () =
     await restoreImpl(new StateProvider());
 
     expect(headObject.mock.calls.map(call => call[0].input.Key)).toEqual([
-        `${key}/${path}`,
-        `${restoreKey}/${path}`
+        obj(key),
+        legacy(key),
+        obj(restoreKey),
+        legacy(restoreKey)
     ]);
     expect(download).not.toHaveBeenCalled();
     expect(outputMock).not.toHaveBeenCalledWith("cache-hit", "true");
@@ -251,11 +259,41 @@ test("BP_CACHE_KEY_PREFIX scopes the object key", async () => {
 
     await restoreImpl(new StateProvider());
 
-    expect(download).toHaveBeenCalledWith(
-        bucket,
-        `tenant-a/${key}/${path}`,
-        path
+    expect(download).toHaveBeenCalledWith(bucket, obj(key), path);
+    expect(obj(key)).toMatch(
+        new RegExp(`^tenant-a/${key}/${path}\\.[0-9a-f]{12}$`)
     );
+    expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
+});
+
+// Entries saved before v7.0.5 named each object by basename alone. They must
+// keep hitting after the upgrade instead of every customer missing once.
+test("an entry saved under the legacy name still restores as an exact hit", async () => {
+    testUtils.setInputs({ path, key });
+    download.mockImplementation(async (_b, objectKey) => {
+        if (objectKey !== legacy(key)) throw awsError("NoSuchKey");
+    });
+
+    await restoreImpl(new StateProvider());
+
+    expect(download.mock.calls.map(call => call[1])).toEqual([
+        obj(key),
+        legacy(key)
+    ]);
+    expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
+    expect(stateMock).not.toHaveBeenCalledWith("CACHE_PARTIAL", "true");
+});
+
+test("lookup-only finds an entry saved under the legacy name", async () => {
+    testUtils.setInputs({ path, key, lookupOnly: true });
+    headObject.mockImplementation(async cmd => {
+        if (cmd.input.Key !== legacy(key)) throw awsError("NotFound");
+        return {};
+    });
+
+    await restoreImpl(new StateProvider());
+
+    expect(download).not.toHaveBeenCalled();
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
 });
 

@@ -51452,6 +51452,9 @@ var State;
 (function (State) {
     State["CachePrimaryKey"] = "CACHE_KEY";
     State["CacheMatchedKey"] = "CACHE_RESULT";
+    // "true" when the matched entry lacked one of the paths after the first.
+    // The post step then saves even on an exact key match, so the entry heals.
+    State["CachePartial"] = "CACHE_PARTIAL";
 })(State = exports.State || (exports.State = {}));
 var Events;
 (function (Events) {
@@ -52247,7 +52250,10 @@ function saveImpl(stateProvider, earlyExit) {
             // If matched restore key is same as primary key, then do not save cache
             // NO-OP in case of SaveOnly action
             const restoredKey = stateProvider.getCacheState();
-            if (utils.isExactKeyMatch(primaryKey, restoredKey)) {
+            // A partial restore (a path missing from the entry) saves anyway, so
+            // the entry gains the missing path instead of staying short forever.
+            const partial = stateProvider.getState(constants_1.State.CachePartial) === "true";
+            if (utils.isExactKeyMatch(primaryKey, restoredKey) && !partial) {
                 core.info(`Cache hit occurred on the primary key ${primaryKey}, not saving cache.`);
                 return;
             }
@@ -52431,7 +52437,11 @@ class NullStateProvider extends StateProviderBase {
             [constants_1.State.CachePrimaryKey, constants_1.Outputs.CachePrimaryKey]
         ]);
         this.setState = (key, value) => {
-            core.setOutput(this.stateToOutputMap.get(key), value);
+            // Only some state has a matching output (CACHE_PARTIAL has none).
+            const output = this.stateToOutputMap.get(key);
+            if (output) {
+                core.setOutput(output, value);
+            }
         };
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         this.getState = (key) => "";
@@ -52487,9 +52497,10 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.isCacheFeatureAvailable = exports.resolvePaths = exports.effectiveCachePaths = exports.expandHome = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
+exports.isCacheFeatureAvailable = exports.resolvePaths = exports.restorePaths = exports.expandHome = exports.generateS3Key = exports.legacyCacheObjectKey = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
+const crypto = __importStar(__nccwpck_require__(6113));
 const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
 const constants_1 = __nccwpck_require__(9042);
@@ -52580,15 +52591,34 @@ function validateAwsCredentials() {
     return true;
 }
 exports.validateAwsCredentials = validateAwsCredentials;
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
- *  key under a prefix, so one bucket can serve callers that must not see each
- *  other's entries. */
-function cacheObjectKey(primaryKey, filePath) {
+function withKeyPrefix(base) {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
-    const base = `${primaryKey}/${path.basename(filePath)}`;
     return prefix ? `${prefix}/${base}` : base;
 }
+/** S3 object key for one path of a cache entry. Optional BP_CACHE_KEY_PREFIX
+ *  scopes every key under a prefix, so one bucket can serve callers that must
+ *  not see each other's entries.
+ *
+ *  The object name is the basename plus a short hash of the absolute path.
+ *  It used to be the basename alone, so two paths with the same last segment
+ *  (`a/node_modules` and `b/node_modules`, or `x` and `~/x`) were uploaded to
+ *  the same object: the second overwrote the first, and restore extracted that
+ *  one archive into both places. The basename stays for readability. */
+function cacheObjectKey(primaryKey, filePath) {
+    const id = crypto
+        .createHash("sha256")
+        .update(path.resolve(filePath))
+        .digest("hex")
+        .slice(0, 12);
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}.${id}`);
+}
 exports.cacheObjectKey = cacheObjectKey;
+/** The basename-only object key that entries saved before v7.0.5 use. Restore
+ *  falls back to it so those entries keep hitting; save never writes it. */
+function legacyCacheObjectKey(primaryKey, filePath) {
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}`);
+}
+exports.legacyCacheObjectKey = legacyCacheObjectKey;
 function generateS3Key(primaryKey, filePath) {
     return cacheObjectKey(primaryKey, filePath);
 }
@@ -52609,17 +52639,43 @@ function expandHome(pattern) {
 exports.expandHome = expandHome;
 // Which paths should restore actually write to?
 //
-// On restore the target usually does not exist yet, so the globber matches
-// nothing and we must fall back to the raw `path` inputs. Those inputs are used
-// directly as the tar extraction destination, so they have to be home-expanded
-// first: `path.dirname("~/x")` is "~", which silently extracts the archive into
-// a directory named "~" under the CWD while the action still reports a cache
-// hit. Split out from restoreImpl so this branch is testable without mocking
-// S3 — the defect lived in the one path unit tests never reached.
-function effectiveCachePaths(resolved, patterns) {
-    return resolved.length > 0 ? resolved : patterns.map(expandHome);
+// Every literal `path` input, home-expanded, whether or not it exists yet.
+// This used to return only the paths that already existed whenever ANY of them
+// did, and the raw inputs only when none did. Something earlier in a job often
+// creates one of the directories (actions/setup-go creates ~/.cache/go-build),
+// so `path: [~/.cache/go-build, ~/.cache/golangci-lint]` restored go-build
+// alone, reported an exact hit, and the post step skipped the save, so the
+// missing directory never came back. Measured on rclone's lint job: every
+// golangci-lint run started cold, 15 s each instead of about 1 s.
+//
+// Home-expansion matters too: these paths are the tar extraction destination,
+// and `path.dirname("~/x")` is "~", which extracts into a directory named "~"
+// under the CWD while the action still reports a cache hit.
+//
+// Glob patterns keep their old behaviour: what they match now, else the raw
+// pattern. Negations only shape what save uploads, so restore ignores them.
+const GLOB_CHARS = /[*?[\]{}]/;
+function restorePaths(patterns) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const out = [];
+        for (const pattern of patterns) {
+            if (!pattern || pattern.startsWith("!")) {
+                continue;
+            }
+            const expanded = expandHome(pattern);
+            const matches = GLOB_CHARS.test(pattern)
+                ? yield resolvePaths([pattern])
+                : [];
+            for (const p of matches.length > 0 ? matches : [expanded]) {
+                if (!out.includes(p)) {
+                    out.push(p);
+                }
+            }
+        }
+        return out;
+    });
 }
-exports.effectiveCachePaths = effectiveCachePaths;
+exports.restorePaths = restorePaths;
 function resolvePaths(patterns) {
     var _a, e_1, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {

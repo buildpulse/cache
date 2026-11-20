@@ -133,10 +133,14 @@ test("a resolved path is uploaded under the primary key", async () => {
     expect(upload).toHaveBeenCalledTimes(1);
     expect(upload).toHaveBeenCalledWith(
         bucket,
-        `${primaryKey}/node_modules`,
+        expect.stringMatching(
+            new RegExp(`^${primaryKey}/node_modules\\.[0-9a-f]{12}$`)
+        ),
         expect.stringMatching(/node_modules$/)
     );
-    expect(saved).toBe(`${primaryKey}/node_modules`);
+    expect(saved).toMatch(
+        new RegExp(`^${primaryKey}/node_modules\\.[0-9a-f]{12}$`)
+    );
     expect(warningMock).not.toHaveBeenCalled();
     expect(failedMock).not.toHaveBeenCalled();
 });

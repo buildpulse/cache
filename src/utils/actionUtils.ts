@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
+import * as crypto from "crypto";
 import * as os from "os";
 import * as path from "path";
 
@@ -117,13 +118,36 @@ export function validateAwsCredentials(): boolean {
     return true;
 }
 
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
- *  key under a prefix, so one bucket can serve callers that must not see each
- *  other's entries. */
-export function cacheObjectKey(primaryKey: string, filePath: string): string {
+function withKeyPrefix(base: string): string {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
-    const base = `${primaryKey}/${path.basename(filePath)}`;
     return prefix ? `${prefix}/${base}` : base;
+}
+
+/** S3 object key for one path of a cache entry. Optional BP_CACHE_KEY_PREFIX
+ *  scopes every key under a prefix, so one bucket can serve callers that must
+ *  not see each other's entries.
+ *
+ *  The object name is the basename plus a short hash of the absolute path.
+ *  It used to be the basename alone, so two paths with the same last segment
+ *  (`a/node_modules` and `b/node_modules`, or `x` and `~/x`) were uploaded to
+ *  the same object: the second overwrote the first, and restore extracted that
+ *  one archive into both places. The basename stays for readability. */
+export function cacheObjectKey(primaryKey: string, filePath: string): string {
+    const id = crypto
+        .createHash("sha256")
+        .update(path.resolve(filePath))
+        .digest("hex")
+        .slice(0, 12);
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}.${id}`);
+}
+
+/** The basename-only object key that entries saved before v7.0.5 use. Restore
+ *  falls back to it so those entries keep hitting; save never writes it. */
+export function legacyCacheObjectKey(
+    primaryKey: string,
+    filePath: string
+): string {
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}`);
 }
 
 export function generateS3Key(primaryKey: string, filePath: string): string {
@@ -146,18 +170,40 @@ export function expandHome(pattern: string): string {
 
 // Which paths should restore actually write to?
 //
-// On restore the target usually does not exist yet, so the globber matches
-// nothing and we must fall back to the raw `path` inputs. Those inputs are used
-// directly as the tar extraction destination, so they have to be home-expanded
-// first: `path.dirname("~/x")` is "~", which silently extracts the archive into
-// a directory named "~" under the CWD while the action still reports a cache
-// hit. Split out from restoreImpl so this branch is testable without mocking
-// S3 — the defect lived in the one path unit tests never reached.
-export function effectiveCachePaths(
-    resolved: string[],
-    patterns: string[]
-): string[] {
-    return resolved.length > 0 ? resolved : patterns.map(expandHome);
+// Every literal `path` input, home-expanded, whether or not it exists yet.
+// This used to return only the paths that already existed whenever ANY of them
+// did, and the raw inputs only when none did. Something earlier in a job often
+// creates one of the directories (actions/setup-go creates ~/.cache/go-build),
+// so `path: [~/.cache/go-build, ~/.cache/golangci-lint]` restored go-build
+// alone, reported an exact hit, and the post step skipped the save, so the
+// missing directory never came back. Measured on rclone's lint job: every
+// golangci-lint run started cold, 15 s each instead of about 1 s.
+//
+// Home-expansion matters too: these paths are the tar extraction destination,
+// and `path.dirname("~/x")` is "~", which extracts into a directory named "~"
+// under the CWD while the action still reports a cache hit.
+//
+// Glob patterns keep their old behaviour: what they match now, else the raw
+// pattern. Negations only shape what save uploads, so restore ignores them.
+const GLOB_CHARS = /[*?[\]{}]/;
+
+export async function restorePaths(patterns: string[]): Promise<string[]> {
+    const out: string[] = [];
+    for (const pattern of patterns) {
+        if (!pattern || pattern.startsWith("!")) {
+            continue;
+        }
+        const expanded = expandHome(pattern);
+        const matches = GLOB_CHARS.test(pattern)
+            ? await resolvePaths([pattern])
+            : [];
+        for (const p of matches.length > 0 ? matches : [expanded]) {
+            if (!out.includes(p)) {
+                out.push(p);
+            }
+        }
+    }
+    return out;
 }
 
 export async function resolvePaths(patterns: string[]): Promise<string[]> {

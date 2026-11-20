@@ -2,7 +2,7 @@ import * as core from "@actions/core";
 import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import * as path from "path";
 
-import { CacheFailure, report } from "./cacheErrors";
+import { CacheFailure, classify, report } from "./cacheErrors";
 import { Events, Inputs, Outputs, State } from "./constants";
 import {
     downloadFromS3,
@@ -17,6 +17,11 @@ import {
 } from "./stateProvider";
 import * as utils from "./utils/actionUtils";
 
+function sharesBasename(cachePath: string, all: string[]): boolean {
+    const name = path.basename(cachePath);
+    return all.some(p => p !== cachePath && path.basename(p) === name);
+}
+
 export async function restoreImpl(
     stateProvider: IStateProvider,
     earlyExit?: boolean | undefined
@@ -25,6 +30,8 @@ export async function restoreImpl(
     // Anything worse than a plain miss, remembered so the end of the run can
     // fail the step when the caller asked for that.
     let failure: CacheFailure | undefined;
+    // Paths after the first that the matched entry did not contain.
+    let missingPaths: string[] = [];
     try {
         if (!utils.isCacheFeatureAvailable()) {
             core.setOutput(Outputs.CacheHit, "false");
@@ -55,19 +62,9 @@ export async function restoreImpl(
             required: true
         });
 
-        // Resolve glob patterns to actual file paths.
-        // On restore the target usually does NOT exist yet — that is the whole
-        // point — so the globber matches nothing and we fall back to the raw
-        // patterns. That fallback must still be home-expanded: `effectivePaths`
-        // becomes the tar extraction destination below, and a literal "~/x"
-        // makes `path.dirname` return "~", so the archive lands in a directory
-        // named "~" under the CWD while the action still reports a cache hit.
-        // resolvePaths() expands internally, so only the fallback needs it.
-        const cachePaths = await utils.resolvePaths(cachePathPatterns);
-        const effectivePaths = utils.effectiveCachePaths(
-            cachePaths,
-            cachePathPatterns
-        );
+        // Every literal path, existing or not. See restorePaths for why
+        // "only what exists" silently dropped half of a multi-path cache.
+        const effectivePaths = await utils.restorePaths(cachePathPatterns);
 
         const failOnCacheMiss = utils.getInputAsBool(Inputs.FailOnCacheMiss);
         const lookupOnly = utils.getInputAsBool(Inputs.LookupOnly);
@@ -81,21 +78,35 @@ export async function restoreImpl(
             let s3Key = utils.cacheObjectKey(key, effectivePaths[0]);
             try {
                 if (lookupOnly) {
-                    const headObjectCommand = new HeadObjectCommand({
-                        Bucket: bucketName,
-                        Key: s3Key
-                    });
-                    try {
-                        await s3Client.send(headObjectCommand);
+                    // An entry exists if its first path does, under either
+                    // the current object name or the pre-v7.0.5 one.
+                    let found = false;
+                    for (const candidate of [
+                        s3Key,
+                        utils.legacyCacheObjectKey(key, effectivePaths[0])
+                    ]) {
+                        try {
+                            await s3Client.send(
+                                new HeadObjectCommand({
+                                    Bucket: bucketName,
+                                    Key: candidate
+                                })
+                            );
+                            s3Key = candidate;
+                            found = true;
+                            break;
+                        } catch (headError) {
+                            if ((headError as any).name !== "NotFound") {
+                                throw headError;
+                            }
+                        }
+                    }
+                    if (found) {
                         core.info(
                             `Cache found and can be restored from key: ${s3Key}`
                         );
                         cacheKey = key;
                         break;
-                    } catch (headError) {
-                        if ((headError as any).name !== "NotFound") {
-                            throw headError;
-                        }
                     }
                     // Nothing under this key, so try the next one. This used to
                     // set cacheKey and break here as well, which reported
@@ -103,17 +114,53 @@ export async function restoreImpl(
                     // looked at the restore keys.
                     core.info(`No cache found for key: ${s3Key}`);
                 } else {
-                    for (const cachePath of effectivePaths) {
+                    // The first path decides whether this key exists at all;
+                    // a miss there falls through to the next key as before.
+                    // A later path can be absent from an entry saved before
+                    // that directory existed. Restore the rest and say so,
+                    // rather than throwing away a good entry.
+                    const missing: string[] = [];
+                    for (const [i, cachePath] of effectivePaths.entries()) {
                         s3Key = utils.cacheObjectKey(key, cachePath);
-
                         core.info(`Pulling ${s3Key}`);
-                        const destinationPath = cachePath;
-                        await downloadFromS3(
-                            bucketName,
-                            s3Key,
-                            destinationPath
-                        );
+                        try {
+                            await downloadFromS3(bucketName, s3Key, cachePath);
+                            continue;
+                        } catch (pathError) {
+                            if (classify(pathError) !== CacheFailure.Miss) {
+                                throw pathError;
+                            }
+                        }
+
+                        // Entries saved before v7.0.5 name each object by its
+                        // basename alone. Fall back to that so they keep
+                        // hitting. If another path in this step shares the
+                        // basename, the object holds whichever path was
+                        // uploaded last, so its content is suspect: restore
+                        // it (as the old version did) but count the entry as
+                        // partial, which re-saves it under the new names.
+                        s3Key = utils.legacyCacheObjectKey(key, cachePath);
+                        try {
+                            await downloadFromS3(bucketName, s3Key, cachePath);
+                            if (sharesBasename(cachePath, effectivePaths)) {
+                                core.info(
+                                    `Restored ${cachePath} from ${s3Key}, which another path with the same name may have overwritten; the entry will be saved again.`
+                                );
+                                missing.push(cachePath);
+                            }
+                            continue;
+                        } catch (pathError) {
+                            if (
+                                i === 0 ||
+                                classify(pathError) !== CacheFailure.Miss
+                            ) {
+                                throw pathError;
+                            }
+                        }
+                        core.info(`Not in this cache entry: ${cachePath}`);
+                        missing.push(cachePath);
                     }
+                    missingPaths = missing;
                     // The matched key is the user's key, not the S3 object
                     // key: the post step compares it with the primary key to
                     // skip re-uploading an exact hit. Storing the object key
@@ -141,8 +188,20 @@ export async function restoreImpl(
             );
         }
 
-        const isExactKeyMatch = utils.isExactKeyMatch(primaryKey, cacheKey);
+        // A partial restore is not a hit: callers gate installs on
+        // cache-hit, and the post step must save to fill the gap.
+        const isExactKeyMatch =
+            utils.isExactKeyMatch(primaryKey, cacheKey) &&
+            missingPaths.length === 0;
         core.setOutput(Outputs.CacheHit, isExactKeyMatch.toString());
+        if (cacheKey && missingPaths.length > 0) {
+            core.info(
+                `Partial restore: ${missingPaths.join(
+                    ", "
+                )} not in the cache entry; it will be saved at the end of the job.`
+            );
+            stateProvider.setState(State.CachePartial, "true");
+        }
 
         if (!cacheKey) {
             core.setOutput(Outputs.CacheHit, "false");
