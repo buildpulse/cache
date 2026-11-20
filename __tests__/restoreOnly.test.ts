@@ -53,10 +53,9 @@ test("a hit reports the primary and matched keys as outputs", async () => {
     await restoreOnlyRun();
 
     expect(outputMock).toHaveBeenCalledWith("cache-primary-key", key);
-    expect(outputMock).toHaveBeenCalledWith(
-        "cache-matched-key",
-        `${key}/${path}`
-    );
+    // Same value actions/cache gives: the key that matched, not the S3 object
+    // key, so `cache-matched-key == cache-primary-key` means an exact hit.
+    expect(outputMock).toHaveBeenCalledWith("cache-matched-key", key);
     expect(outputMock).toHaveBeenCalledWith("cache-hit", "true");
     expect(stateMock).not.toHaveBeenCalled();
 });

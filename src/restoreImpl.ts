@@ -90,7 +90,7 @@ export async function restoreImpl(
                         core.info(
                             `Cache found and can be restored from key: ${s3Key}`
                         );
-                        cacheKey = s3Key;
+                        cacheKey = key;
                         break;
                     } catch (headError) {
                         if ((headError as any).name !== "NotFound") {
@@ -114,8 +114,13 @@ export async function restoreImpl(
                             destinationPath
                         );
                     }
-                    cacheKey = s3Key;
-                    core.info(`Cache restored from key: ${cacheKey}`);
+                    // The matched key is the user's key, not the S3 object
+                    // key: the post step compares it with the primary key to
+                    // skip re-uploading an exact hit. Storing the object key
+                    // (prefix + key + basename) made that comparison always
+                    // false, so every exact hit re-uploaded the whole cache.
+                    cacheKey = key;
+                    core.info(`Cache restored from key: ${key} (${s3Key})`);
                     break;
                 }
             } catch (error) {
@@ -136,8 +141,7 @@ export async function restoreImpl(
             );
         }
 
-        const isExactKeyMatch =
-            cacheKey === utils.cacheObjectKey(primaryKey, effectivePaths[0]);
+        const isExactKeyMatch = utils.isExactKeyMatch(primaryKey, cacheKey);
         core.setOutput(Outputs.CacheHit, isExactKeyMatch.toString());
 
         if (!cacheKey) {

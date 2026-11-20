@@ -51714,7 +51714,7 @@ function restoreImpl(stateProvider, earlyExit) {
                         try {
                             yield s3Client_1.s3Client.send(headObjectCommand);
                             core.info(`Cache found and can be restored from key: ${s3Key}`);
-                            cacheKey = s3Key;
+                            cacheKey = key;
                             break;
                         }
                         catch (headError) {
@@ -51735,8 +51735,13 @@ function restoreImpl(stateProvider, earlyExit) {
                             const destinationPath = cachePath;
                             yield (0, s3Client_1.downloadFromS3)(bucketName, s3Key, destinationPath);
                         }
-                        cacheKey = s3Key;
-                        core.info(`Cache restored from key: ${cacheKey}`);
+                        // The matched key is the user's key, not the S3 object
+                        // key: the post step compares it with the primary key to
+                        // skip re-uploading an exact hit. Storing the object key
+                        // (prefix + key + basename) made that comparison always
+                        // false, so every exact hit re-uploaded the whole cache.
+                        cacheKey = key;
+                        core.info(`Cache restored from key: ${key} (${s3Key})`);
                         break;
                     }
                 }
@@ -51754,7 +51759,7 @@ function restoreImpl(stateProvider, earlyExit) {
             if (failure && utils.failOnCacheError()) {
                 throw new Error(`Cache ${failure} error and on-cache-error is set to error.`);
             }
-            const isExactKeyMatch = cacheKey === utils.cacheObjectKey(primaryKey, effectivePaths[0]);
+            const isExactKeyMatch = utils.isExactKeyMatch(primaryKey, cacheKey);
             core.setOutput(constants_1.Outputs.CacheHit, isExactKeyMatch.toString());
             if (!cacheKey) {
                 core.setOutput(constants_1.Outputs.CacheHit, "false");
