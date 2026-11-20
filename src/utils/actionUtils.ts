@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
+import * as crypto from "crypto";
 import * as os from "os";
 import * as path from "path";
 
@@ -117,13 +118,36 @@ export function validateAwsCredentials(): boolean {
     return true;
 }
 
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
- *  key under a prefix, so one bucket can serve callers that must not see each
- *  other's entries. */
-export function cacheObjectKey(primaryKey: string, filePath: string): string {
+function withKeyPrefix(base: string): string {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
-    const base = `${primaryKey}/${path.basename(filePath)}`;
     return prefix ? `${prefix}/${base}` : base;
+}
+
+/** S3 object key for one path of a cache entry. Optional BP_CACHE_KEY_PREFIX
+ *  scopes every key under a prefix, so one bucket can serve callers that must
+ *  not see each other's entries.
+ *
+ *  The object name is the basename plus a short hash of the absolute path.
+ *  It used to be the basename alone, so two paths with the same last segment
+ *  (`a/node_modules` and `b/node_modules`, or `x` and `~/x`) were uploaded to
+ *  the same object: the second overwrote the first, and restore extracted that
+ *  one archive into both places. The basename stays for readability. */
+export function cacheObjectKey(primaryKey: string, filePath: string): string {
+    const id = crypto
+        .createHash("sha256")
+        .update(path.resolve(filePath))
+        .digest("hex")
+        .slice(0, 12);
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}.${id}`);
+}
+
+/** The basename-only object key that entries saved before v7.0.5 use. Restore
+ *  falls back to it so those entries keep hitting; save never writes it. */
+export function legacyCacheObjectKey(
+    primaryKey: string,
+    filePath: string
+): string {
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}`);
 }
 
 export function generateS3Key(primaryKey: string, filePath: string): string {

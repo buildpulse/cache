@@ -17,6 +17,11 @@ import {
 } from "./stateProvider";
 import * as utils from "./utils/actionUtils";
 
+function sharesBasename(cachePath: string, all: string[]): boolean {
+    const name = path.basename(cachePath);
+    return all.some(p => p !== cachePath && path.basename(p) === name);
+}
+
 export async function restoreImpl(
     stateProvider: IStateProvider,
     earlyExit?: boolean | undefined
@@ -73,21 +78,35 @@ export async function restoreImpl(
             let s3Key = utils.cacheObjectKey(key, effectivePaths[0]);
             try {
                 if (lookupOnly) {
-                    const headObjectCommand = new HeadObjectCommand({
-                        Bucket: bucketName,
-                        Key: s3Key
-                    });
-                    try {
-                        await s3Client.send(headObjectCommand);
+                    // An entry exists if its first path does, under either
+                    // the current object name or the pre-v7.0.5 one.
+                    let found = false;
+                    for (const candidate of [
+                        s3Key,
+                        utils.legacyCacheObjectKey(key, effectivePaths[0])
+                    ]) {
+                        try {
+                            await s3Client.send(
+                                new HeadObjectCommand({
+                                    Bucket: bucketName,
+                                    Key: candidate
+                                })
+                            );
+                            s3Key = candidate;
+                            found = true;
+                            break;
+                        } catch (headError) {
+                            if ((headError as any).name !== "NotFound") {
+                                throw headError;
+                            }
+                        }
+                    }
+                    if (found) {
                         core.info(
                             `Cache found and can be restored from key: ${s3Key}`
                         );
                         cacheKey = key;
                         break;
-                    } catch (headError) {
-                        if ((headError as any).name !== "NotFound") {
-                            throw headError;
-                        }
                     }
                     // Nothing under this key, so try the next one. This used to
                     // set cacheKey and break here as well, which reported
@@ -103,10 +122,33 @@ export async function restoreImpl(
                     const missing: string[] = [];
                     for (const [i, cachePath] of effectivePaths.entries()) {
                         s3Key = utils.cacheObjectKey(key, cachePath);
-
                         core.info(`Pulling ${s3Key}`);
                         try {
                             await downloadFromS3(bucketName, s3Key, cachePath);
+                            continue;
+                        } catch (pathError) {
+                            if (classify(pathError) !== CacheFailure.Miss) {
+                                throw pathError;
+                            }
+                        }
+
+                        // Entries saved before v7.0.5 name each object by its
+                        // basename alone. Fall back to that so they keep
+                        // hitting. If another path in this step shares the
+                        // basename, the object holds whichever path was
+                        // uploaded last, so its content is suspect: restore
+                        // it (as the old version did) but count the entry as
+                        // partial, which re-saves it under the new names.
+                        s3Key = utils.legacyCacheObjectKey(key, cachePath);
+                        try {
+                            await downloadFromS3(bucketName, s3Key, cachePath);
+                            if (sharesBasename(cachePath, effectivePaths)) {
+                                core.info(
+                                    `Restored ${cachePath} from ${s3Key}, which another path with the same name may have overwritten; the entry will be saved again.`
+                                );
+                                missing.push(cachePath);
+                            }
+                            continue;
                         } catch (pathError) {
                             if (
                                 i === 0 ||
@@ -114,9 +156,9 @@ export async function restoreImpl(
                             ) {
                                 throw pathError;
                             }
-                            core.info(`Not in this cache entry: ${s3Key}`);
-                            missing.push(cachePath);
                         }
+                        core.info(`Not in this cache entry: ${cachePath}`);
+                        missing.push(cachePath);
                     }
                     missingPaths = missing;
                     // The matched key is the user's key, not the S3 object

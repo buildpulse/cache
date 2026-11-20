@@ -29,6 +29,23 @@ const download = s3.downloadFromS3 as jest.MockedFunction<
 >;
 const upload = s3.uploadToS3 as jest.MockedFunction<typeof s3.uploadToS3>;
 
+// A fake bucket: download succeeds only for objects that were "saved".
+let store: Set<string>;
+const noSuchKey = (): Error =>
+    Object.assign(new Error("NoSuchKey"), { name: "NoSuchKey" });
+const useStore = (): void => {
+    download.mockImplementation(async (_b, objectKey) => {
+        if (!store.has(objectKey)) throw noSuchKey();
+    });
+    upload.mockImplementation(async (_b, objectKey) => {
+        store.add(objectKey);
+    });
+};
+const outputs = (): Record<string, string> =>
+    Object.fromEntries(
+        (core.setOutput as jest.Mock).mock.calls.map(([k, v]) => [k, String(v)])
+    );
+
 const key = "go-build-linux-abc123";
 const restoreKey = "go-build-linux-";
 
@@ -40,6 +57,8 @@ beforeEach(() => {
     upload.mockReset();
     resetReportState();
     state = {};
+    store = new Set();
+    useStore();
 
     process.env[Events.Key] = Events.Push;
     process.env[RefKey] = "refs/heads/main";
@@ -76,12 +95,12 @@ describe.each([
     });
 
     test("an exact hit is not uploaded again", async () => {
+        store.add(actionUtils.cacheObjectKey(key, __dirname));
         testUtils.setInputs({
             path: __dirname,
             key,
             restoreKeys: [restoreKey]
         });
-        download.mockResolvedValue(undefined);
 
         await restoreImpl(new StateProvider());
         await saveImpl(new StateProvider());
@@ -91,32 +110,25 @@ describe.each([
     });
 
     test("a restore-key hit is uploaded under the primary key", async () => {
+        store.add(actionUtils.cacheObjectKey(restoreKey, __dirname));
         testUtils.setInputs({
             path: __dirname,
             key,
             restoreKeys: [restoreKey]
         });
-        download
-            .mockRejectedValueOnce(
-                Object.assign(new Error("NoSuchKey"), { name: "NoSuchKey" })
-            )
-            .mockResolvedValueOnce(undefined);
 
         await restoreImpl(new StateProvider());
         await saveImpl(new StateProvider());
 
         expect(upload).toHaveBeenCalledTimes(1);
-        const objectKey = `${key}/__tests__`;
-        expect(upload.mock.calls[0][1]).toBe(
-            prefix ? `org-acme-1234/${objectKey}` : objectKey
+        const objectKey = upload.mock.calls[0][1];
+        expect(objectKey).toMatch(
+            new RegExp(`^${prefix ?? ""}${key}/__tests__\\.[0-9a-f]{12}$`)
         );
     });
 
     test("a miss is uploaded under the primary key", async () => {
         testUtils.setInputs({ path: __dirname, key });
-        download.mockRejectedValue(
-            Object.assign(new Error("NoSuchKey"), { name: "NoSuchKey" })
-        );
 
         await restoreImpl(new StateProvider());
         await saveImpl(new StateProvider());
@@ -132,19 +144,12 @@ describe.each([
 // every job (rclone lint 2026-11-20: 15 s per run instead of about 1 s).
 describe("a cache with several paths", () => {
     const absent = `${__dirname}/__bp_not_created_yet__`;
-    const outputs = (): Record<string, string> =>
-        Object.fromEntries(
-            (core.setOutput as jest.Mock).mock.calls.map(([k, v]) => [
-                k,
-                String(v)
-            ])
-        );
-    const noSuchKey = (): Error =>
-        Object.assign(new Error("NoSuchKey"), { name: "NoSuchKey" });
+    const paths = `${__dirname}\n${absent}`;
 
     test("pulls every path, including one that does not exist yet", async () => {
-        testUtils.setInputs({ path: `${__dirname}\n${absent}`, key });
-        download.mockResolvedValue(undefined);
+        store.add(actionUtils.cacheObjectKey(key, __dirname));
+        store.add(actionUtils.cacheObjectKey(key, absent));
+        testUtils.setInputs({ path: paths, key });
 
         await restoreImpl(new StateProvider());
         await saveImpl(new StateProvider());
@@ -155,15 +160,12 @@ describe("a cache with several paths", () => {
     });
 
     test("an entry missing a later path restores the rest, is not a hit, and is saved", async () => {
-        testUtils.setInputs({ path: `${__dirname}\n${absent}`, key });
-        download
-            .mockResolvedValueOnce(undefined)
-            .mockRejectedValueOnce(noSuchKey());
+        store.add(actionUtils.cacheObjectKey(key, __dirname));
+        testUtils.setInputs({ path: paths, key });
 
         await restoreImpl(new StateProvider());
         await saveImpl(new StateProvider());
 
-        expect(download).toHaveBeenCalledTimes(2);
         expect(outputs()["cache-hit"]).toBe("false");
         expect(state["CACHE_RESULT"]).toBe(key);
         // Save runs although the key matched exactly, so the entry heals.
@@ -171,36 +173,72 @@ describe("a cache with several paths", () => {
     });
 
     test("a missing first path is still a miss for that key", async () => {
-        testUtils.setInputs({
-            path: `${__dirname}\n${absent}`,
-            key,
-            restoreKeys: [restoreKey]
-        });
-        download
-            .mockRejectedValueOnce(noSuchKey())
-            .mockResolvedValue(undefined);
+        store.add(actionUtils.cacheObjectKey(key, absent));
+        store.add(actionUtils.cacheObjectKey(restoreKey, __dirname));
+        store.add(actionUtils.cacheObjectKey(restoreKey, absent));
+        testUtils.setInputs({ path: paths, key, restoreKeys: [restoreKey] });
 
         await restoreImpl(new StateProvider());
 
-        // key: first path missed, so its second path was never tried;
-        // restoreKey: both paths pulled.
-        expect(download).toHaveBeenCalledTimes(3);
         expect(state["CACHE_RESULT"]).toBe(restoreKey);
         expect(outputs()["cache-hit"]).toBe("false");
     });
 
     test("a real error on a later path is not treated as a partial hit", async () => {
-        testUtils.setInputs({ path: `${__dirname}\n${absent}`, key });
-        download
-            .mockResolvedValueOnce(undefined)
-            .mockRejectedValueOnce(
-                Object.assign(new Error("boom"), { name: "InternalError" })
-            );
+        store.add(actionUtils.cacheObjectKey(key, __dirname));
+        download.mockImplementation(async (_b, objectKey) => {
+            if (objectKey === actionUtils.cacheObjectKey(key, __dirname))
+                return;
+            throw Object.assign(new Error("boom"), { name: "InternalError" });
+        });
+        testUtils.setInputs({ path: paths, key });
 
         await restoreImpl(new StateProvider());
 
         expect(state["CACHE_RESULT"]).toBeUndefined();
         expect(state["CACHE_PARTIAL"]).toBeUndefined();
         expect(outputs()["cache-hit"]).toBe("false");
+    });
+});
+
+// Two paths with the same last segment used to share one S3 object
+// (key/basename): the second upload overwrote the first, and restore put that
+// one archive into both places.
+describe("paths that share a basename", () => {
+    const a = `${__dirname}/__fixtures__/a/node_modules`;
+    const b = `${__dirname}/__fixtures__/b/node_modules`;
+
+    test("get different object names", () => {
+        expect(actionUtils.cacheObjectKey(key, a)).not.toBe(
+            actionUtils.cacheObjectKey(key, b)
+        );
+        // Same path spelled differently is the same object.
+        expect(actionUtils.cacheObjectKey(key, `${a}/`)).toBe(
+            actionUtils.cacheObjectKey(key, a)
+        );
+    });
+
+    test("a legacy entry where they collided restores, is not a hit, and is saved under the new names", async () => {
+        // Pre-v7.0.5 layout: one object for both paths.
+        store.add(actionUtils.legacyCacheObjectKey(key, a));
+        testUtils.setInputs({ path: `${a}\n${b}`, key });
+
+        await restoreImpl(new StateProvider());
+
+        expect(download.mock.calls.map(c => c[2])).toEqual([a, a, b, b]);
+        expect(outputs()["cache-hit"]).toBe("false");
+        expect(state["CACHE_PARTIAL"]).toBe("true");
+        expect(state["CACHE_RESULT"]).toBe(key);
+    });
+
+    test("a legacy entry with distinct basenames is still an exact hit", async () => {
+        store.add(actionUtils.legacyCacheObjectKey(key, __dirname));
+        testUtils.setInputs({ path: __dirname, key });
+
+        await restoreImpl(new StateProvider());
+        await saveImpl(new StateProvider());
+
+        expect(outputs()["cache-hit"]).toBe("true");
+        expect(upload).not.toHaveBeenCalled();
     });
 });

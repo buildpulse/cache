@@ -52497,9 +52497,10 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.isCacheFeatureAvailable = exports.resolvePaths = exports.restorePaths = exports.expandHome = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
+exports.isCacheFeatureAvailable = exports.resolvePaths = exports.restorePaths = exports.expandHome = exports.generateS3Key = exports.legacyCacheObjectKey = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
+const crypto = __importStar(__nccwpck_require__(6113));
 const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
 const constants_1 = __nccwpck_require__(9042);
@@ -52590,15 +52591,34 @@ function validateAwsCredentials() {
     return true;
 }
 exports.validateAwsCredentials = validateAwsCredentials;
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
- *  key under a prefix, so one bucket can serve callers that must not see each
- *  other's entries. */
-function cacheObjectKey(primaryKey, filePath) {
+function withKeyPrefix(base) {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
-    const base = `${primaryKey}/${path.basename(filePath)}`;
     return prefix ? `${prefix}/${base}` : base;
 }
+/** S3 object key for one path of a cache entry. Optional BP_CACHE_KEY_PREFIX
+ *  scopes every key under a prefix, so one bucket can serve callers that must
+ *  not see each other's entries.
+ *
+ *  The object name is the basename plus a short hash of the absolute path.
+ *  It used to be the basename alone, so two paths with the same last segment
+ *  (`a/node_modules` and `b/node_modules`, or `x` and `~/x`) were uploaded to
+ *  the same object: the second overwrote the first, and restore extracted that
+ *  one archive into both places. The basename stays for readability. */
+function cacheObjectKey(primaryKey, filePath) {
+    const id = crypto
+        .createHash("sha256")
+        .update(path.resolve(filePath))
+        .digest("hex")
+        .slice(0, 12);
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}.${id}`);
+}
 exports.cacheObjectKey = cacheObjectKey;
+/** The basename-only object key that entries saved before v7.0.5 use. Restore
+ *  falls back to it so those entries keep hitting; save never writes it. */
+function legacyCacheObjectKey(primaryKey, filePath) {
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}`);
+}
+exports.legacyCacheObjectKey = legacyCacheObjectKey;
 function generateS3Key(primaryKey, filePath) {
     return cacheObjectKey(primaryKey, filePath);
 }

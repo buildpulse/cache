@@ -51658,11 +51658,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.restoreRun = exports.restoreOnlyRun = exports.restoreImpl = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const client_s3_1 = __nccwpck_require__(9250);
+const path = __importStar(__nccwpck_require__(1017));
 const cacheErrors_1 = __nccwpck_require__(162);
 const constants_1 = __nccwpck_require__(9042);
 const s3Client_1 = __nccwpck_require__(5791);
 const stateProvider_1 = __nccwpck_require__(1527);
 const utils = __importStar(__nccwpck_require__(6850));
+function sharesBasename(cachePath, all) {
+    const name = path.basename(cachePath);
+    return all.some(p => p !== cachePath && path.basename(p) === name);
+}
 function restoreImpl(stateProvider, earlyExit) {
     return __awaiter(this, void 0, void 0, function* () {
         let cacheKey;
@@ -51705,20 +51710,32 @@ function restoreImpl(stateProvider, earlyExit) {
                 let s3Key = utils.cacheObjectKey(key, effectivePaths[0]);
                 try {
                     if (lookupOnly) {
-                        const headObjectCommand = new client_s3_1.HeadObjectCommand({
-                            Bucket: bucketName,
-                            Key: s3Key
-                        });
-                        try {
-                            yield s3Client_1.s3Client.send(headObjectCommand);
+                        // An entry exists if its first path does, under either
+                        // the current object name or the pre-v7.0.5 one.
+                        let found = false;
+                        for (const candidate of [
+                            s3Key,
+                            utils.legacyCacheObjectKey(key, effectivePaths[0])
+                        ]) {
+                            try {
+                                yield s3Client_1.s3Client.send(new client_s3_1.HeadObjectCommand({
+                                    Bucket: bucketName,
+                                    Key: candidate
+                                }));
+                                s3Key = candidate;
+                                found = true;
+                                break;
+                            }
+                            catch (headError) {
+                                if (headError.name !== "NotFound") {
+                                    throw headError;
+                                }
+                            }
+                        }
+                        if (found) {
                             core.info(`Cache found and can be restored from key: ${s3Key}`);
                             cacheKey = key;
                             break;
-                        }
-                        catch (headError) {
-                            if (headError.name !== "NotFound") {
-                                throw headError;
-                            }
                         }
                         // Nothing under this key, so try the next one. This used to
                         // set cacheKey and break here as well, which reported
@@ -51738,15 +51755,37 @@ function restoreImpl(stateProvider, earlyExit) {
                             core.info(`Pulling ${s3Key}`);
                             try {
                                 yield (0, s3Client_1.downloadFromS3)(bucketName, s3Key, cachePath);
+                                continue;
+                            }
+                            catch (pathError) {
+                                if ((0, cacheErrors_1.classify)(pathError) !== "miss" /* CacheFailure.Miss */) {
+                                    throw pathError;
+                                }
+                            }
+                            // Entries saved before v7.0.5 name each object by its
+                            // basename alone. Fall back to that so they keep
+                            // hitting. If another path in this step shares the
+                            // basename, the object holds whichever path was
+                            // uploaded last, so its content is suspect: restore
+                            // it (as the old version did) but count the entry as
+                            // partial, which re-saves it under the new names.
+                            s3Key = utils.legacyCacheObjectKey(key, cachePath);
+                            try {
+                                yield (0, s3Client_1.downloadFromS3)(bucketName, s3Key, cachePath);
+                                if (sharesBasename(cachePath, effectivePaths)) {
+                                    core.info(`Restored ${cachePath} from ${s3Key}, which another path with the same name may have overwritten; the entry will be saved again.`);
+                                    missing.push(cachePath);
+                                }
+                                continue;
                             }
                             catch (pathError) {
                                 if (i === 0 ||
                                     (0, cacheErrors_1.classify)(pathError) !== "miss" /* CacheFailure.Miss */) {
                                     throw pathError;
                                 }
-                                core.info(`Not in this cache entry: ${s3Key}`);
-                                missing.push(cachePath);
                             }
+                            core.info(`Not in this cache entry: ${cachePath}`);
+                            missing.push(cachePath);
                         }
                         missingPaths = missing;
                         // The matched key is the user's key, not the S3 object
@@ -52510,9 +52549,10 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.isCacheFeatureAvailable = exports.resolvePaths = exports.restorePaths = exports.expandHome = exports.generateS3Key = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
+exports.isCacheFeatureAvailable = exports.resolvePaths = exports.restorePaths = exports.expandHome = exports.generateS3Key = exports.legacyCacheObjectKey = exports.cacheObjectKey = exports.validateAwsCredentials = exports.getInputAsBool = exports.getInputAsInt = exports.getInputAsArray = exports.isValidEvent = exports.failOnCacheError = exports.logWarning = exports.isExactKeyMatch = exports.isGhes = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const glob = __importStar(__nccwpck_require__(8090));
+const crypto = __importStar(__nccwpck_require__(6113));
 const os = __importStar(__nccwpck_require__(2037));
 const path = __importStar(__nccwpck_require__(1017));
 const constants_1 = __nccwpck_require__(9042);
@@ -52603,15 +52643,34 @@ function validateAwsCredentials() {
     return true;
 }
 exports.validateAwsCredentials = validateAwsCredentials;
-/** S3 object key for a cache entry. Optional BP_CACHE_KEY_PREFIX scopes every
- *  key under a prefix, so one bucket can serve callers that must not see each
- *  other's entries. */
-function cacheObjectKey(primaryKey, filePath) {
+function withKeyPrefix(base) {
     const prefix = (process.env.BP_CACHE_KEY_PREFIX || "").replace(/\/+$/, "");
-    const base = `${primaryKey}/${path.basename(filePath)}`;
     return prefix ? `${prefix}/${base}` : base;
 }
+/** S3 object key for one path of a cache entry. Optional BP_CACHE_KEY_PREFIX
+ *  scopes every key under a prefix, so one bucket can serve callers that must
+ *  not see each other's entries.
+ *
+ *  The object name is the basename plus a short hash of the absolute path.
+ *  It used to be the basename alone, so two paths with the same last segment
+ *  (`a/node_modules` and `b/node_modules`, or `x` and `~/x`) were uploaded to
+ *  the same object: the second overwrote the first, and restore extracted that
+ *  one archive into both places. The basename stays for readability. */
+function cacheObjectKey(primaryKey, filePath) {
+    const id = crypto
+        .createHash("sha256")
+        .update(path.resolve(filePath))
+        .digest("hex")
+        .slice(0, 12);
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}.${id}`);
+}
 exports.cacheObjectKey = cacheObjectKey;
+/** The basename-only object key that entries saved before v7.0.5 use. Restore
+ *  falls back to it so those entries keep hitting; save never writes it. */
+function legacyCacheObjectKey(primaryKey, filePath) {
+    return withKeyPrefix(`${primaryKey}/${path.basename(filePath)}`);
+}
+exports.legacyCacheObjectKey = legacyCacheObjectKey;
 function generateS3Key(primaryKey, filePath) {
     return cacheObjectKey(primaryKey, filePath);
 }
