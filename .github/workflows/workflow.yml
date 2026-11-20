@@ -34,16 +34,29 @@ jobs:
     - name: Build & Test
       run: npm run test
 
-  # End to end save and restore
+  # End to end save and restore against the real S3 backend.
+  #
+  # The cache only works where a bucket, region and credentials are present.
+  # A BuildPulse runner injects them (BP_CACHE_S3_BUCKET, BP_CACHE_AWS_*), so
+  # these jobs run on a bp- label and exercise S3 for real. There are no
+  # BuildPulse Windows or macOS runners; those OSes are covered by the unit
+  # tests above and by test-unconfigured below.
+  #
+  # Skipped for pull requests from forks: the runner hands the job live cache
+  # credentials, which fork code must not get.
   test-save:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: bp-ubuntu-latest-x64-2x
     steps:
     - name: Checkout
       uses: actions/checkout@v3
+    - name: Require the runner's cache configuration
+      shell: bash
+      run: |
+        if [ -z "$BP_CACHE_S3_BUCKET" ]; then
+          echo "::error::BP_CACHE_S3_BUCKET is not set: this runner did not inject the cache configuration, so the e2e would skip caching and prove nothing."
+          exit 1
+        fi
     - name: Generate files in working directory
       shell: bash
       run: __tests__/create-cache-files.sh ${{ runner.os }} test-cache
@@ -57,8 +70,54 @@ jobs:
         path: |
           test-cache
           ~/test-cache
+        on-cache-error: error
   test-restore:
     needs: test-save
+    runs-on: bp-ubuntu-latest-x64-2x
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Restore cache
+      id: restore
+      uses: ./
+      with:
+        key: test-${{ runner.os }}-${{ github.run_id }}
+        path: |
+          test-cache
+          ~/test-cache
+        fail-on-cache-miss: true
+        on-cache-error: error
+    - name: Verify exact hit
+      shell: bash
+      run: |
+        echo "cache-hit=${{ steps.restore.outputs.cache-hit }}"
+        test "${{ steps.restore.outputs.cache-hit }}" = "true"
+    - name: Verify cache files in working directory
+      shell: bash
+      run: __tests__/verify-cache-files.sh ${{ runner.os }} test-cache
+    - name: Verify cache files outside working directory
+      shell: bash
+      run: __tests__/verify-cache-files.sh ${{ runner.os }} ~/test-cache
+    - name: Restore a key that was never saved
+      id: miss
+      uses: ./restore
+      with:
+        key: test-missing-${{ runner.os }}-${{ github.run_id }}
+        path: test-cache-missing
+        on-cache-error: error
+    - name: Verify a miss is a miss, not an error
+      shell: bash
+      run: |
+        echo "cache-hit=${{ steps.miss.outputs.cache-hit }}"
+        test "${{ steps.miss.outputs.cache-hit }}" = "false"
+        test ! -e test-cache-missing
+
+  # GitHub-hosted runners have no cache configuration. The documented behavior
+  # there is: warn "not configured", skip caching, report cache-hit=false, and
+  # never fail the job, even with on-cache-error: error (that setting is for a
+  # configured cache that cannot be reached). The post step's save runs too,
+  # so a failing save would fail this job.
+  test-unconfigured:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
@@ -67,63 +126,37 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-    - name: Restore cache
-      uses: ./
-      with:
-        key: test-${{ runner.os }}-${{ github.run_id }}
-        path: |
-          test-cache
-          ~/test-cache
-    - name: Verify cache files in working directory
-      shell: bash
-      run: __tests__/verify-cache-files.sh ${{ runner.os }} test-cache
-    - name: Verify cache files outside working directory
-      shell: bash
-      run: __tests__/verify-cache-files.sh ${{ runner.os }} ~/test-cache
-
-  # End to end with proxy
-  test-proxy-save:
-    runs-on: ubuntu-latest
-    container:
-      image: ubuntu:latest
-      options: --dns 127.0.0.1
-    services:
-      squid-proxy:
-        image: ubuntu/squid:latest
-        ports:
-          - 3128:3128
-    env:
-      https_proxy: http://squid-proxy:3128
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v3
     - name: Generate files
-      run: __tests__/create-cache-files.sh proxy test-cache
-    - name: Save cache
+      shell: bash
+      run: __tests__/create-cache-files.sh ${{ runner.os }} test-cache
+    - name: Restore and save (unconfigured)
+      id: cache
       uses: ./
       with:
-        key: test-proxy-${{ github.run_id }}
+        key: test-unconfigured-${{ runner.os }}-${{ github.run_id }}
         path: test-cache
-  test-proxy-restore:
-    needs: test-proxy-save
-    runs-on: ubuntu-latest
-    container:
-      image: ubuntu:latest
-      options: --dns 127.0.0.1
-    services:
-      squid-proxy:
-        image: ubuntu/squid:latest
-        ports:
-          - 3128:3128
-    env:
-      https_proxy: http://squid-proxy:3128
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: Restore cache
-      uses: ./
+        on-cache-error: error
+    - name: Verify cache-hit is false
+      shell: bash
+      run: |
+        echo "cache-hit=${{ steps.cache.outputs.cache-hit }}"
+        test "${{ steps.cache.outputs.cache-hit }}" = "false"
+    - name: Restore only (unconfigured)
+      id: restore-only
+      uses: ./restore
       with:
-        key: test-proxy-${{ github.run_id }}
+        key: test-unconfigured-${{ runner.os }}-${{ github.run_id }}
+        path: test-cache-restore-only
+        on-cache-error: error
+    - name: Verify restore-only cache-hit is false and nothing was written
+      shell: bash
+      run: |
+        echo "cache-hit=${{ steps.restore-only.outputs.cache-hit }}"
+        test "${{ steps.restore-only.outputs.cache-hit }}" = "false"
+        test ! -e test-cache-restore-only
+    - name: Save only (unconfigured)
+      uses: ./save
+      with:
+        key: test-unconfigured-${{ runner.os }}-${{ github.run_id }}
         path: test-cache
-    - name: Verify cache
-      run: __tests__/verify-cache-files.sh proxy test-cache
+        on-cache-error: error

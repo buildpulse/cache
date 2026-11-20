@@ -14,3 +14,4 @@ allowed:
 reviewed:
   npm:
   - sax
+  - minizlib # MIT text prefixed by a Node.js-derivative notice, so licensee reports "other"
